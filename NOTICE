@@ -84,7 +84,7 @@ scrub was run over the vendored files; no title-identifying string is tracked.
 
 Game-name scrub and asset policy
 --------------------------------
-The supported title is referred to only as "Cuck Simulator Miami" (CSM). The
+The supported title is referred to only as "Miami Chores Simulator" (MCS). The
 real game name, publisher, release/scene tags and title-identifying strings are
 stripped by scripts/scrub.py (idempotent, re-run after every upstream sync).
 Nothing game-derived is tracked; the asset policy runs with zero exceptions.

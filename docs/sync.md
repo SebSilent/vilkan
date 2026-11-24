@@ -46,7 +46,7 @@ VIlkan is built on VIctory. The library crates keep their upstream names
 - Nothing game-derived is ever tracked. The asset policy
   ([asset-policy.md](asset-policy.md)) runs with zero exceptions.
 - The game-name scrub keeps the supported title referred to only as "Cuck
-  Simulator Miami" (CSM). Project names (VIctory) are credited in NOTICE, not
+  Simulator Miami" (MCS). Project names (VIctory) are credited in NOTICE, not
   scrubbed.
 - Do not push this fork's history to a public remote; the public repo is
   initialized fresh from the scrubbed tree (see README, Publishing).

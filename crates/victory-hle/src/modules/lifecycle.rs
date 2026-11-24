@@ -110,7 +110,7 @@ pub extern "system" fn CreateWindowExA(
     hwnd
 }
 
-/// A console title sizes its window to its render target (Cuck Simulator Miami: 3840x2160 on a Series X), which can exceed the host's screen.
+/// A console title sizes its window to its render target (Miami Chores Simulator: 3840x2160 on a Series X), which can exceed the host's screen.
 /// A top-level window larger than the work area is shrunk to fit, keeping
 /// its proportions, and centred; what it shows is scaled to it (the swap
 /// chain stretches).

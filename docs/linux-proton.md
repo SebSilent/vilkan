@@ -1,6 +1,6 @@
 # The bootstrap backend and the native Vulkan target
 
-VIlkan's destination is **CSM Xbox native on Linux** — a native process with
+VIlkan's destination is **MCS Xbox native on Linux** — a native process with
 our own Vulkan backend, no Proton. The D3D12 → VKD3D-Proton path described
 here is a **temporary bootstrap backend**: it gets the title running by
 reusing a Windows binary under Proton while the native backend is built.
@@ -11,7 +11,7 @@ gap).
 ## The bootstrap stack today
 
 ```
-CSM Xbox title (x86-64, runs unchanged)
+MCS Xbox title (x86-64, runs unchanged)
   └─ vilkan.exe         PE loader + console HLE
        └─ Proton (Wine)     Win32, WASAPI audio, XInput
             └─ VKD3D-Proton host D3D12 → Vulkan

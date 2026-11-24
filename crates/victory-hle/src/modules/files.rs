@@ -508,7 +508,7 @@ pub extern "C" fn _wfsopen(path: *const u16, mode: *const u16, share: i32) -> Fi
 
 // Kernel reads into title memory. The GPU side leaves blocks of title GPU
 // buffers read-only to see the title's next write, and the kernel's writes
-// fail there instead of faulting into its handler; Cuck Simulator Miami's
+// fail there instead of faulting into its handler; Miami Chores Simulator's
 // synchronous reads (a title offset) read straight into 4 KiB-aligned
 // destinations and retry a failed `ReadFile` forever. So the destination
 // is opened first.

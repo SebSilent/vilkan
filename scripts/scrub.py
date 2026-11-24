@@ -2,8 +2,8 @@
 """Repeatable game-name scrub for the publishable tree.
 
 Strips the title, publisher, release/scene tags and title-identifying strings
-from tracked source/docs, replacing them with the generic alias "Cuck Simulator
-Miami" (CSM). Idempotent: re-running after an upstream sync changes nothing that
+from tracked source/docs, replacing them with the generic alias "Miami Chores
+Simulator" (MCS). Idempotent: re-running after an upstream sync changes nothing that
 is already scrubbed. Project names (VIctory, the upstream) are NOT touched —
 they are credited in NOTICE, not scrubbed.
 
