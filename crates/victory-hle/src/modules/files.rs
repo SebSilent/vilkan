@@ -261,7 +261,7 @@ pub extern "system" fn CreateFileW(
     template: Handle,
 ) -> Handle {
     let p = wide(path);
-    host!("kernel32.dll", "CreateFileW": extern "system" fn(*const u16, u32, u32, *const c_void, u32, u32, Handle) -> Handle)(
+    let h = host!("kernel32.dll", "CreateFileW": extern "system" fn(*const u16, u32, u32, *const c_void, u32, u32, Handle) -> Handle)(
         p.ptr(),
         access,
         share,
@@ -269,7 +269,23 @@ pub extern "system" fn CreateFileW(
         disposition,
         flags,
         template,
-    )
+    );
+    // Discriminate guest file opens (logs only): a failed open, and any
+    // request for a pack (.rpf / \pack\), so a run shows whether the title
+    // asked for the world packs at all or we refused them.
+    if !path.is_null() {
+        // SAFETY: the title passes a NUL-terminated path (as wide() reads).
+        let s = unsafe {
+            let len = (0..).take_while(|&i| *path.add(i) != 0).count();
+            String::from_utf16_lossy(std::slice::from_raw_parts(path, len))
+        };
+        if h as isize == -1 {
+            tracing::warn!(path = %s, "CreateFileW failed");
+        } else if s.contains(".rpf") || s.contains("\\pack\\") {
+            tracing::info!(path = %s, "CreateFileW pack opened");
+        }
+    }
+    h
 }
 
 pub extern "system" fn CreateFileA(
