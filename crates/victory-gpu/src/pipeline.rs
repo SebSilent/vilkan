@@ -207,6 +207,53 @@ pub fn mesh_start() -> Option<std::time::Instant> {
     MESH_START.get().copied()
 }
 
+/// A shared time bucket for synchronous first-use pipeline compilation.
+///
+/// The loading-screen frame renders on five `Subrender` worker threads; the
+/// title's hang watchdog ends the game after ~30 s without a frame. A frame
+/// meeting hundreds of new pipelines whose host compilation each takes
+/// 0.25-0.5 s slept all five workers past the watchdog (five-star
+/// FirstUseBudget.cs / debugging.md). The bucket caps the total first-use
+/// compilation time: capacity 1 s, refilling 0.25 s per second. When it is
+/// empty a first use skips compilation (returns `None`, the draw/dispatch is
+/// skipped) rather than blocking the worker; the pipeline compiles on a
+/// later bind once the bucket refills. Mechanism after five-star (GPL);
+/// implementation ours.
+#[cfg(windows)]
+mod first_use_budget {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    const CAPACITY: Duration = Duration::from_secs(1);
+    const REFILL_PER_SEC: f64 = 0.25;
+    // (available time, last refill instant); lazily started on first use.
+    static BUCKET: Mutex<Option<(Duration, Instant)>> = Mutex::new(None);
+
+    fn refill(state: &mut (Duration, Instant)) {
+        let now = Instant::now();
+        let add = now.duration_since(state.1).as_secs_f64() * REFILL_PER_SEC;
+        state.0 = (state.0 + Duration::from_secs_f64(add)).min(CAPACITY);
+        state.1 = now;
+    }
+
+    /// Whether any compilation time is left.
+    pub fn available() -> bool {
+        let mut g = BUCKET.lock().unwrap_or_else(|e| e.into_inner());
+        let state = g.get_or_insert((CAPACITY, Instant::now()));
+        refill(state);
+        state.0 > Duration::ZERO
+    }
+
+    /// Charge `elapsed` compilation time to the bucket.
+    pub fn spend(elapsed: Duration) {
+        let mut g = BUCKET.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(state) = g.as_mut() {
+            refill(state);
+            state.0 = state.0.saturating_sub(elapsed);
+        }
+    }
+}
+
 /// The host pipeline of a title pipeline, made on first use; `None` if one
 /// of its shaders does not translate or the host refuses it.
 #[cfg(windows)]
@@ -215,9 +262,22 @@ pub(crate) fn host_pipeline<'a>(this: This) -> Option<&'a host::HostPipeline> {
         return None;
     }
     let p = pipeline(this);
-    p.host
-        .get_or_init(|| host::HostPipeline::new(&p.shaders, p.graphics.as_deref()))
-        .as_ref()
+    // Already compiled: no budget cost, never blocks.
+    if let Some(h) = p.host.get() {
+        return h.as_ref();
+    }
+    // First use: budget the synchronous host compilation so the Subrender
+    // workers never sleep past the hang watchdog. When the bucket is empty,
+    // skip (the pipeline compiles on a later bind once it refills).
+    if !first_use_budget::available() {
+        return None;
+    }
+    let start = std::time::Instant::now();
+    let h = p
+        .host
+        .get_or_init(|| host::HostPipeline::new(&p.shaders, p.graphics.as_deref()));
+    first_use_budget::spend(start.elapsed());
+    h.as_ref()
 }
 
 /// The stage's container, if it has one.
