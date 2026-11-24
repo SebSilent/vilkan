@@ -291,42 +291,52 @@ pub(crate) fn unregister(resource: usize, start: u64) {
 /// len)`, made on first use.
 pub(crate) fn find(address: u64, len: u64) -> Option<Arc<Shadow>> {
     let end = address.checked_add(len.max(1))?;
-    let mut map = buffers();
-    let key = map
-        .range(..=(address, usize::MAX))
-        .rev()
-        .take(64)
-        .find(|(_, e)| e.end >= end)
-        .map(|(k, _)| *k);
+    // The BUFFERS lock is held only for the map lookup/insert, NEVER across
+    // the GPU allocation (shared_buffer) or logging: holding it across those
+    // blocked every other thread that needs a shadow, and holding it across
+    // the log-sink lock risked a lock-order deadlock (the ~30 s global log
+    // silence before the 1a watchdog crash).
+    let key = {
+        let map = buffers();
+        map.range(..=(address, usize::MAX))
+            .rev()
+            .take(64)
+            .find(|(_, e)| e.end >= end)
+            .map(|(k, _)| *k)
+    };
     let Some(key) = key else {
-        drop(map);
         return loose(address, end);
     };
-    let entry = map.get_mut(&key)?;
-    if entry.shadow.is_none() {
-        let len = entry.end - key.0;
-        // Rounded up so that views ending in the buffer's last 256 bytes fit.
-        // Shaders write some buffers (unordered access), so not upload memory.
-        let (buffer, data) = host()?.shared_buffer(len.next_multiple_of(1 << 16))?;
-        crate::host::name(&buffer, || format!("title buffer {:#x}+{len:#x}", key.0));
-        // SAFETY: a live buffer.
-        let gpu = unsafe { buffer.GetGPUVirtualAddress() };
-        if len >= 16 << 20 {
-            tracing::info!(
-                start = format_args!("{:#x}", key.0),
-                len,
-                "large buffer copied to the host"
-            );
-        } else {
-            tracing::debug!(
-                start = format_args!("{:#x}", key.0),
-                len,
-                "buffer copied to the host"
-            );
-        }
-        entry.shadow = Some(Arc::new(Shadow::new(buffer, data, gpu, key.0, len)));
+    // Fast path: already shadowed.
+    if let Some(shadow) = buffers().get(&key).and_then(|e| e.shadow.clone()) {
+        return Some(shadow);
     }
-    entry.shadow.clone()
+    let len = buffers().get(&key)?.end - key.0;
+    // Rounded up so that views ending in the buffer's last 256 bytes fit.
+    // Shaders write some buffers (unordered access), so not upload memory.
+    // Created WITHOUT the BUFFERS lock held.
+    let (buffer, data) = host()?.shared_buffer(len.next_multiple_of(1 << 16))?;
+    crate::host::name(&buffer, || format!("title buffer {:#x}+{len:#x}", key.0));
+    // SAFETY: a live buffer.
+    let gpu = unsafe { buffer.GetGPUVirtualAddress() };
+    if len >= 16 << 20 {
+        tracing::info!(
+            start = format_args!("{:#x}", key.0),
+            len,
+            "large buffer copied to the host"
+        );
+    } else {
+        tracing::debug!(
+            start = format_args!("{:#x}", key.0),
+            len,
+            "buffer copied to the host"
+        );
+    }
+    let shadow = Arc::new(Shadow::new(buffer, data, gpu, key.0, len));
+    // Re-acquire to insert; another thread may have made it meanwhile.
+    let mut map = buffers();
+    let entry = map.get_mut(&key)?;
+    Some(entry.shadow.get_or_insert(shadow).clone())
 }
 
 /// Titles also use memory outside any buffer object as GPU memory (Grand
@@ -342,8 +352,9 @@ static LOOSE: Mutex<BTreeMap<(u64, u64), Arc<Shadow>>> = Mutex::new(BTreeMap::ne
 fn loose(address: u64, end: u64) -> Option<Arc<Shadow>> {
     let start = address & !(WINDOW - 1);
     let len = end.next_multiple_of(WINDOW) - start;
-    let mut map = LOOSE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(shadow) = map.get(&(start, len)) {
+    // LOOSE is held only for the lookup/insert, never across the GPU
+    // allocation or logging (same lock-scope fix as find()).
+    if let Some(shadow) = LOOSE.lock().unwrap_or_else(|e| e.into_inner()).get(&(start, len)) {
         return Some(shadow.clone());
     }
     let (buffer, data) = host()?.shared_buffer(len)?;
@@ -356,8 +367,8 @@ fn loose(address: u64, end: u64) -> Option<Arc<Shadow>> {
         "loose memory copied to the host"
     );
     let shadow = Arc::new(Shadow::new(buffer, data, gpu, start, len));
-    map.insert((start, len), shadow.clone());
-    Some(shadow)
+    let mut map = LOOSE.lock().unwrap_or_else(|e| e.into_inner());
+    Some(map.entry((start, len)).or_insert(shadow).clone())
 }
 
 /// For device-removed reports: the copy of title memory whose host range
