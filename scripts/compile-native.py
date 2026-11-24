@@ -91,17 +91,26 @@ def check_result(spv, index, meta):
             subgroup_builtin = True
     entry = next(iter(index.values())) if isinstance(index, dict) else index[0]
     emulated = entry.get("wave64_emulated", False)
+    stage = meta.get("stage", "cs")
     problems = []
     if meta["wave64"]:
-        if not emulated:
-            problems.append("real header is wave64 but the module is not wave64-emulated")
-        if subgroup_ops or subgroup_builtin:
-            problems.append(f"subgroup traffic in a wave64-emulated module ({subgroup_ops} ops, builtin={subgroup_builtin})")
-        if local != list(meta["group"]):
-            problems.append(f"LocalSize {local} != real group {meta['group']}")
+        if stage == "cs":
+            # Compute: wave64 must be emulated (round-scheduler), no subgroup ops,
+            # and the real thread-group size.
+            if not emulated:
+                problems.append("real header is wave64 but the module is not wave64-emulated")
+            if subgroup_ops or subgroup_builtin:
+                problems.append(f"subgroup traffic in a wave64-emulated module ({subgroup_ops} ops, builtin={subgroup_builtin})")
+            if local != list(meta["group"]):
+                problems.append(f"LocalSize {local} != real group {meta['group']}")
+        else:
+            # Graphics (VS/PS/GS/MS): wave64 is exact on wave32 only when the
+            # program is partition-invariant (tier A/B) — no subgroup traffic.
+            if subgroup_ops or subgroup_builtin:
+                problems.append(f"subgroup traffic in a wave64 graphics shader ({subgroup_ops} ops, builtin={subgroup_builtin}); not exact on wave32")
     if problems:
         sys.exit("FAIL " + str(spv) + ": " + "; ".join(problems))
-    print(f"checked: wave64_emulated={emulated} subgroup_ops={subgroup_ops} LocalSize={local}")
+    print(f"checked: stage={stage} wave64_emulated={emulated} subgroup_ops={subgroup_ops} LocalSize={local}")
 
 
 def main():
@@ -120,15 +129,17 @@ def main():
         sys.exit(f"no translator at {translator} (missing tools/rdna2spirv.py)")
     out = Path(a.out).resolve()
     stem = Path(a.blob).stem
-    name = f"cs_{stem}"
 
-    # Real header metadata (group, rsrc2, wave flag) — not asserted.
+    # Real header metadata (stage, group, rsrc2, wave flag) — not asserted.
     meta_path = Path(a.blob + ".json")
     if not meta_path.exists():
         sys.exit(f"missing real metadata {meta_path}; run extract-native first")
     meta = json.loads(meta_path.read_text())
     group = tuple(meta["group"])
-    print(f"real header: wave64={meta['wave64']} rsrc2={meta['rsrc2']:#x} group={group}")
+    stage = meta.get("stage", "cs")
+    # The translator takes the stage from the name prefix; don't double it.
+    name = stem if stem.startswith(("vs_", "ps_", "cs_", "ms_", "gs_")) else f"{stage}_{stem}"
+    print(f"real header: stage={stage} wave64={meta['wave64']} rsrc2={meta['rsrc2']:#x} group={group}")
 
     work = out / "work"
     disasm = work / "disasm"
@@ -147,13 +158,22 @@ def main():
     code, stripped = strip_vnop_prologue(raw)
     if stripped:
         print(f"stripped {stripped} bytes of v_nop prologue")
-    code_off = 0x100
-    framed = bytearray(code_off + len(code))
+    # Place the code right after the 0x148-byte FSSM header (code_off must not
+    # overlap the header's rsrc2/group/wave fields). The framed blob carries the
+    # real header AND the code, so it serves both as the disassembly source and
+    # as the FSSM sidecar the translator's encoding cross-check reads back.
+    code_off = 0x148
+    framed = bytearray(compute_header(group, meta["rsrc2"], meta["wave64"]))
+    framed.extend(bytearray(code_off + len(code) - len(framed)))
     struct.pack_into("<I", framed, 0xC0, code_off - 0x28)
-    framed[code_off:] = code
+    framed[code_off:code_off + len(code)] = code
     blob = work / f"{stem}.blob"
     blob.parent.mkdir(parents=True, exist_ok=True)
     blob.write_bytes(framed)
+    # Graphics stages read their signatures/PSV0 from <work>/<name>.dxbc.
+    container_src = Path(a.blob + ".dxbc")
+    if container_src.exists():
+        (work / f"{name}.dxbc").write_bytes(container_src.read_bytes())
 
     # Content-addressed cache key: the code AND the FSSM header metadata that
     # affects translation (rsrc2, group, wave flag) AND the emulation marker.
@@ -181,10 +201,13 @@ def main():
         src = disasm / f"{stem}.s"
         if not src.exists():
             sys.exit(f"disassembly produced no {src}")
-        # 2. Name it cs_ for the compute stage; FSSM sidecar from the real header.
-        (disasm / f"{name}.s").write_text(src.read_text())
-        src.unlink()
-        (fssm / f"{name}.fssm").write_bytes(compute_header(group, meta["rsrc2"], meta["wave64"]))
+        # 2. Name it for the stage; the FSSM sidecar is the framed blob (real
+        # header + code) so the translator's encoding cross-check reads real code.
+        dst = disasm / f"{name}.s"
+        if dst != src:
+            dst.write_text(src.read_text())
+            src.unlink()
+        (fssm / f"{name}.fssm").write_bytes(framed)
 
         # 3. Translate with wave64 emulation; rdna2spirv validates with spirv-val.
         r = subprocess.run([sys.executable, "-I", str(tools / "rdna2spirv.py"),
