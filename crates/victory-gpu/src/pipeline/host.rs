@@ -592,7 +592,7 @@ fn mesh_pipeline(
     unsafe { device.cast::<ID3D12Device2>()?.CreatePipelineState(&desc) }
 }
 
-fn root_signature(
+pub(crate) fn root_signature(
     device: &ID3D12Device,
     params: &[D3D12_ROOT_PARAMETER1],
     samplers: &[D3D12_STATIC_SAMPLER_DESC],

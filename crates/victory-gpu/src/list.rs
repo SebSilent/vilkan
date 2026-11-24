@@ -1176,6 +1176,13 @@ extern "system" fn execute_indirect(
         });
     }
     if ran {
+        // Measure indirect execution (the clamp fix's acceptance): count
+        // runs, log the first and every 500th.
+        static RAN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = RAN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        if n == 1 || n % 500 == 0 {
+            tracing::info!(executed = n, "indirect execution ran");
+        }
         return;
     }
     INDIRECT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
