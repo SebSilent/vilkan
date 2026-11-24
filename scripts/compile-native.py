@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Offline SPIR-V compiler sidecar: raw RDNA2 code -> Leonida -> validated SPIR-V.
+"""Offline SPIR-V compiler sidecar: raw RDNA2 code -> the reference translator -> validated SPIR-V.
 
-VIlkan's native Vulkan path consumes SPIR-V compiled by Leonida's clean-room
+VIlkan's native Vulkan path consumes SPIR-V compiled by a clean-room
 RDNA2 translator (GPL-3.0), not a port of it. This script wires the steps:
 
   1. shader_disasm.py disassembles the raw RDNA2 blob (llvm-mc, AMDGPU target).
@@ -14,7 +14,7 @@ RDNA2 translator (GPL-3.0), not a port of it. This script wires the steps:
      this fails (no silent wave32 fallback).
 
 Usage:
-  compile-native.py <raw.blob> <out-dir> [--leonida DIR]
+  compile-native.py <raw.blob> <out-dir> [--translator DIR]
 
 The blob, its .json metadata and outputs are game-derived: keep them outside
 the repo (e.g. the external data dir). Nothing here is tracked.
@@ -29,7 +29,7 @@ from pathlib import Path
 
 
 def compute_header(group, rsrc2, wave64):
-    # Leonida compute_fixture.compute_header layout: 0x148 bytes, rsrc2 + group
+    # the reference compute_fixture.compute_header layout: 0x148 bytes, rsrc2 + group
     # at 0x138. The FSSM magic makes fssm_header.wave_size() read the wave flag
     # at 0xD4 (bit 5 set = wave32, clear = wave64); without the magic the
     # translator falls back to code markers and a blur shader has none.
@@ -90,10 +90,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("blob")
     ap.add_argument("out")
-    ap.add_argument("--leonida", default=os.environ.get("LEONIDA_DIR", "../leonida"))
+    ap.add_argument("--translator", default=os.environ.get("TRANSLATOR_DIR"),
+                    help="the clean-room RDNA2 translator checkout (or TRANSLATOR_DIR)")
     a = ap.parse_args()
-    leonida = Path(a.leonida).resolve()
-    tools = leonida / "tools"
+    if not a.translator:
+        sys.exit("set --translator or TRANSLATOR_DIR to the RDNA2 translator checkout")
+    translator = Path(a.translator).resolve()
+    tools = translator / "tools"
     out = Path(a.out).resolve()
     stem = Path(a.blob).stem
     name = f"cs_{stem}"
@@ -126,9 +129,8 @@ def main():
     (fssm / f"{name}.fssm").write_bytes(compute_header(group, meta["rsrc2"], meta["wave64"]))
 
     # 3. Translate with wave64 emulation; rdna2spirv validates with spirv-val.
-    env = dict(os.environ, LEONIDA_W64_EMULATE="1")
     r = subprocess.run([sys.executable, "-I", str(tools / "rdna2spirv.py"),
-                        str(disasm), "--out", str(spirv), "--wave64-emulate"], env=env)
+                        str(disasm), "--out", str(spirv), "--wave64-emulate"])
     if r.returncode:
         sys.exit(r.returncode)
     spv = spirv / f"{name}.spv"

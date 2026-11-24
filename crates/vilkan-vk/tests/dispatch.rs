@@ -1,6 +1,6 @@
-//! Native Vulkan dispatch of Leonida-compiled SPIR-V, checked numerically.
+//! Native Vulkan dispatch of sidecar-compiled SPIR-V, checked numerically.
 //!
-//! Fixtures (SPIR-V compiled offline by Leonida's `rdna2spirv.py --wave64-emulate`)
+//! Fixtures (SPIR-V compiled offline by the reference translator with --wave64-emulate)
 //! come from `VILKAN_VK_FIXTURES` (a dir of `.spv`); the tests skip cleanly when
 //! it is unset or a file is missing, so a clean clone with no game data passes.
 //! Nothing game-derived is tracked. Acceptance is a correct dispatch (the output
@@ -35,7 +35,7 @@ fn dispatch_words(spv: &[u8], n: usize) -> Option<Vec<u32>> {
     Some(heap.read_words(n))
 }
 
-/// Leonida cs_w64x_readlane: v2 = 3*lane+1; cross-half readlane at lanes
+/// Reference fixture cs_w64x_readlane: v2 = 3*lane+1; cross-half readlane at lanes
 /// 40/5/32/33 -> out = 121 121 16 97 16 100 100 121. A 32-lane subgroup that
 /// wrapped the lane select would give 25 for lane 40 (the issue this catches).
 #[test]
@@ -45,7 +45,7 @@ fn readlane_cross_half_native() {
     assert_eq!(out, vec![121, 121, 16, 97, 16, 100, 100, 121], "readlane output");
 }
 
-/// Leonida cs_w64x_writelane: writes into lanes >= 32 then reads them back from
+/// Reference fixture cs_w64x_writelane: writes into lanes >= 32 then reads them back from
 /// the low half -> out = 4660 77 99 2748 0 0 4660 99.
 #[test]
 fn writelane_cross_half_native() {

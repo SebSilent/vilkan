@@ -1,5 +1,5 @@
 //! Extract the native RDNA2 code of the compute program in a console shader
-//! container, plus its real header metadata, for the offline Leonida compiler
+//! container, plus its real header metadata, for the offline compiler
 //! sidecar. Game-derived input and output live outside the tree; this tool only
 //! reads a path given on the command line and writes a raw code blob and a JSON
 //! metadata sidecar (group size, wave flag, resource layout) read from the real

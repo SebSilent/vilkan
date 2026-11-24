@@ -1,6 +1,6 @@
 [package]
 name = "vilkan-vk"
-description = "Linux-native Vulkan runtime: dispatch Leonida-compiled SPIR-V compute, no Proton/D3D12."
+description = "Linux-native Vulkan runtime: dispatch sidecar-compiled SPIR-V compute, no Proton/D3D12."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

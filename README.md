@@ -35,14 +35,15 @@ switch backends.
 
 ### First native execution (no Proton, no D3D12)
 
-The `vilkan-vk` crate (ash) runs Leonida-compiled SPIR-V **natively on Linux**,
-built with plain `cargo`. The shader compiler is Leonida's clean-room RDNA2
-translator (GPL-3.0), reused offline as a sidecar — not ported, not
-reimplemented. The cross-half wave64 fixtures dispatch on the RTX 2070
-(subgroup 32) with `--wave64-emulate` and match the console reference
-numerically; both captured blur shaders compile to validated wave64-emulated
-SPIR-V. See [docs/native-vulkan.md](docs/native-vulkan.md) for the contract,
-provenance and the remaining blur-dispatch step (the bindless descriptor heap).
+The `vilkan-vk` crate (ash) runs sidecar-compiled SPIR-V **natively on Linux**,
+built with plain `cargo`. The shader compiler is a clean-room RDNA2 translator
+reused offline as a sidecar — not ported, not reimplemented (its provenance and
+license position are in a local, untracked note). The cross-half wave64
+fixtures dispatch on the RTX 2070 (subgroup 32) with `--wave64-emulate` and
+match the console reference numerically; both captured blur shaders compile to
+validated wave64-emulated SPIR-V from the real header metadata. See
+[docs/native-vulkan.md](docs/native-vulkan.md) for the contract and the
+remaining blur-dispatch step (the bindless descriptor heap).
 
 ## Naming and merge-ability
 

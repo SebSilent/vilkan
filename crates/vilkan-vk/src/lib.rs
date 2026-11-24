@@ -1,10 +1,10 @@
-//! Linux-native Vulkan runtime for Leonida-compiled SPIR-V compute shaders.
+//! Linux-native Vulkan runtime for sidecar-compiled SPIR-V compute shaders.
 //!
 //! No Proton, no D3D12: this owns the Vulkan device, pipelines and dispatch
-//! directly on Linux (ash). The SPIR-V is compiled offline by Leonida's
+//! directly on Linux (ash). The SPIR-V is compiled offline by the reference translator's
 //! clean-room RDNA2 translator (`rdna2spirv.py`, GPL-3.0) with `--wave64-emulate`,
 //! so wave64 console programs run exactly on a 32-lane host with no subgroup
-//! operations. The binding contract is Leonida's (`docs/design.md`): 144 push
+//! operations. The binding contract is the reference translator's (`docs/design.md`): 144 push
 //! constant bytes = s0..s31 (128) + heap base lo/hi + code base lo/hi; a single
 //! "heap" buffer at Xbox VA 0, the output V# in s[0:3].
 
@@ -30,7 +30,7 @@ pub struct Context {
 
 impl Context {
     /// Create a device on the first discrete GPU (the RTX 2070 here), with the
-    /// features Leonida's SPIR-V needs: buffer device address, shader int64,
+    /// features the SPIR-V needs: buffer device address, shader int64,
     /// and the float-controls denorm/signed-zero preserve modes.
     pub fn new() -> Result<Context> {
         // Loads the system Vulkan loader (safe in ash 0.38).
@@ -83,7 +83,7 @@ impl Context {
 
         // Features: Vulkan 1.2 buffer device address; base shader int64. The
         // float-controls preserve modes the SPIR-V declares are accepted by the
-        // driver without a feature enable (as in Leonida's own harness).
+        // driver without a feature enable (as in the reference harness).
         let mut f12q = vk::PhysicalDeviceVulkan12Features::default();
         let mut f2q = vk::PhysicalDeviceFeatures2::default().push_next(&mut f12q);
         // SAFETY: valid physical device, chained feature structs.
