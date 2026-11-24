@@ -5,7 +5,7 @@ access, and pick up work. See [CONTRIBUTING](CONTRIBUTING.md).
 
 # VIlkan — Cuck Simulator Miami (Xbox), native on Linux
 
-**VIlkan is built on [VIctory](https://github.com/raffclar/victory)** (the Xbox
+**VIlkan is built on [VIctory](https://github.com/Marvisak/VIctory)** (the Xbox
 Series X|S → Windows compatibility layer), with our own Linux runtime, wave64
 work, and a native Vulkan translation path. The title's x86-64 code runs
 unchanged inside our process; VIlkan supplies the platform underneath it. The

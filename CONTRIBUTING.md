@@ -17,7 +17,7 @@ coordination all happen in Discord:
 Please do not open drive-by PRs or start large changes without talking to the
 team first. The Discord is where scope, priorities, and access are decided.
 
-VIlkan is built on [VIctory](https://github.com/raffclar/victory); see
+VIlkan is built on [VIctory](https://github.com/Marvisak/VIctory); see
 [NOTICE](NOTICE) for attribution and what is ours.
 
 ## Technical requirements (once you are working with the team)
