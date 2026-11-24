@@ -65,6 +65,66 @@ pub struct RenderTarget {
     pub height: u32,
 }
 
+/// The render-target blend / write-mask state (RT0), backend-neutral: the D3D12
+/// enum codes as plain integers. The default is D3D12's overwrite state (blend
+/// off, write all channels), so an older capture without it replays unchanged.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BlendState {
+    /// D3D12_COLOR_WRITE_ENABLE flags (RED=1, GREEN=2, BLUE=4, ALPHA=8).
+    #[serde(default = "BlendState::all_channels")]
+    pub write_mask: u8,
+    #[serde(default)]
+    pub blend_enable: bool,
+    /// D3D12_BLEND codes, 1-based as the enum is defined (ZERO=1, ONE=2,
+    /// SRC_COLOR=3, SRC_ALPHA=5, INV_SRC_ALPHA=6, ...). Stored verbatim from the
+    /// host PSO's `SrcBlend.0`; the replay maps the same values.
+    #[serde(default = "BlendState::one")]
+    pub src_blend: u32,
+    #[serde(default = "BlendState::zero")]
+    pub dest_blend: u32,
+    /// D3D12_BLEND_OP codes, 1-based (ADD=1, SUBTRACT=2, REV_SUBTRACT=3, MIN=4, MAX=5).
+    #[serde(default = "BlendState::add")]
+    pub blend_op: u32,
+    #[serde(default = "BlendState::one")]
+    pub src_blend_alpha: u32,
+    #[serde(default = "BlendState::zero")]
+    pub dest_blend_alpha: u32,
+    #[serde(default = "BlendState::add")]
+    pub blend_op_alpha: u32,
+}
+
+impl BlendState {
+    fn all_channels() -> u8 {
+        0xF
+    }
+    fn one() -> u32 {
+        2 // D3D12_BLEND_ONE
+    }
+    fn zero() -> u32 {
+        1 // D3D12_BLEND_ZERO
+    }
+    fn add() -> u32 {
+        1 // D3D12_BLEND_OP_ADD
+    }
+}
+
+impl Default for BlendState {
+    /// D3D12's overwrite default: blend off, write all channels, ONE/ZERO/ADD
+    /// (the 1-based enum codes the host PSO desc carries for a plain overwrite).
+    fn default() -> Self {
+        Self {
+            write_mask: 0xF,
+            blend_enable: false,
+            src_blend: 2,
+            dest_blend: 1,
+            blend_op: 1,
+            src_blend_alpha: 2,
+            dest_blend_alpha: 1,
+            blend_op_alpha: 1,
+        }
+    }
+}
+
 /// One captured draw, backend-neutral. Unknown fields in `draw.json` (frame,
 /// ordinal, shader containers, ...) are ignored: a backend reads what it needs.
 #[derive(Debug, Clone, Deserialize)]
@@ -82,6 +142,9 @@ pub struct DrawRecord {
     #[serde(default)]
     pub vertex_buffers: Vec<VertexBuffer>,
     pub targets: Vec<RenderTarget>,
+    /// RT0 blend / write-mask state (defaults to D3D12 overwrite when absent).
+    #[serde(default)]
+    pub blend: BlendState,
 }
 
 impl DrawRecord {

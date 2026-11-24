@@ -59,6 +59,41 @@ pub struct RenderTarget {
     pub height: u32,
 }
 
+/// RT0 blend / write-mask state, backend-neutral (D3D12 enum codes as integers).
+#[derive(Clone, Serialize, Deserialize)]
+pub struct BlendState {
+    /// D3D12_COLOR_WRITE_ENABLE flags (RED=1, GREEN=2, BLUE=4, ALPHA=8).
+    pub write_mask: u8,
+    pub blend_enable: bool,
+    /// D3D12_BLEND codes, 1-based as the enum is defined (ZERO=1, ONE=2,
+    /// SRC_COLOR=3, SRC_ALPHA=5, INV_SRC_ALPHA=6, ...). Stored verbatim from
+    /// `SrcBlend.0` so the replay maps the same values the host PSO used.
+    pub src_blend: u32,
+    pub dest_blend: u32,
+    /// D3D12_BLEND_OP codes, 1-based (ADD=1, SUBTRACT=2, REV_SUBTRACT=3, MIN=4, MAX=5).
+    pub blend_op: u32,
+    pub src_blend_alpha: u32,
+    pub dest_blend_alpha: u32,
+    pub blend_op_alpha: u32,
+}
+
+impl Default for BlendState {
+    /// D3D12's overwrite default: blend off, write all channels, ONE/ZERO/ADD
+    /// (the 1-based enum codes the host PSO desc carries for a plain overwrite).
+    fn default() -> Self {
+        Self {
+            write_mask: 0xF,
+            blend_enable: false,
+            src_blend: 2,
+            dest_blend: 1,
+            blend_op: 1,
+            src_blend_alpha: 2,
+            dest_blend_alpha: 1,
+            blend_op_alpha: 1,
+        }
+    }
+}
+
 /// A root view's buffer bytes (a root CBV/SRV the shaders read directly),
 /// captured from console memory so the replay can place them in its heap.
 #[derive(Serialize, Deserialize)]
@@ -94,6 +129,8 @@ pub struct DrawRecord {
     /// Bytes of any root-view buffers the shaders read (address -> sidecar file).
     pub view_buffers: Vec<ViewBuffer>,
     pub targets: Vec<RenderTarget>,
+    /// RT0 blend / write-mask state from the bound pipeline.
+    pub blend: BlendState,
     pub viewport: Viewport,
     /// The D3D12 render-target readback for this draw (the oracle), if captured.
     pub oracle_file: Option<String>,

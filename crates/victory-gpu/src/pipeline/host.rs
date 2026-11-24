@@ -17,6 +17,20 @@ use windows::core::PCSTR;
 use super::{Shader, Translated};
 use crate::host::host;
 
+/// RT0 blend state as the backend-neutral capture record (D3D12 enum codes).
+fn blend_record(rt: &D3D12_RENDER_TARGET_BLEND_DESC) -> crate::drawcap::BlendState {
+    crate::drawcap::BlendState {
+        write_mask: rt.RenderTargetWriteMask,
+        blend_enable: rt.BlendEnable.as_bool(),
+        src_blend: rt.SrcBlend.0 as u32,
+        dest_blend: rt.DestBlend.0 as u32,
+        blend_op: rt.BlendOp.0 as u32,
+        src_blend_alpha: rt.SrcBlendAlpha.0 as u32,
+        dest_blend_alpha: rt.DestBlendAlpha.0 as u32,
+        blend_op_alpha: rt.BlendOpAlpha.0 as u32,
+    }
+}
+
 /// A stream's graphics state, owned (the title's stream lives only for the
 /// creation call). Subobjects the stream leaves out keep D3D12's defaults.
 pub(crate) struct GraphicsState {
@@ -247,6 +261,8 @@ pub(crate) struct HostPipeline {
     pub(crate) inputs: Vec<Input>,
     /// Its shaders, for reports of slow submissions.
     pub(crate) name: String,
+    /// RT0 blend / write-mask state, for the draw capture (backend-neutral).
+    pub(crate) blend: crate::drawcap::BlendState,
 }
 
 /// Keep what the host refused, for offline analysis: the console
@@ -439,6 +455,7 @@ impl HostPipeline {
                 name: format!("{shaders:?}"),
                 slots: 0,
                 inputs: Vec::new(),
+                blend: crate::drawcap::BlendState::default(),
             });
         }
         let Some(g) = g else {
@@ -464,6 +481,7 @@ impl HostPipeline {
                 name: format!("{shaders:?}"),
                 slots: 0,
                 inputs: Vec::new(),
+                blend: blend_record(&g.blend.RenderTarget[0]),
             });
         }
 
@@ -523,6 +541,7 @@ impl HostPipeline {
             name: format!("{shaders:?}"),
             slots: g.slots(),
             inputs: g.elements(),
+            blend: blend_record(&g.blend.RenderTarget[0]),
         })
     }
 }

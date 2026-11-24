@@ -167,7 +167,7 @@ fn real_textured_pair_constant_input() {
     let mut pc = tex.push_constants();
     pc[8] = 0; pc[9] = 0; pc[11] = 32; // T# table at heap+0, S# at heap+32
     let Some(px) = rt.draw_with_set(&vs, &ps, [0.0, 0.0, 0.0, 0.0],
-        std::slice::from_ref(&tex.set_layout), tex.set, &pc).ok() else { return };
+        std::slice::from_ref(&tex.set_layout), tex.set, &pc, &Default::default()).ok() else { return };
     assert_eq!(px.len(), 64 * 64 * 4);
     let want = [64.0 / 255.0, 128.0 / 255.0, 191.0 / 255.0, 1.0];
     let mut max_err = 0.0f32;
@@ -202,7 +202,7 @@ fn real_textured_pair_checkerboard() {
     let mut pc = tex.push_constants();
     pc[8] = 0; pc[9] = 0; pc[11] = 32;
     let Some(px) = rt.draw_with_set(&vs, &ps, [0.5, 0.5, 0.5, 1.0],
-        std::slice::from_ref(&tex.set_layout), tex.set, &pc).ok() else { return };
+        std::slice::from_ref(&tex.set_layout), tex.set, &pc, &Default::default()).ok() else { return };
     // Sample the centre of each 8x8 block; classify black/white.
     let mut block = [[0u8; 8]; 8];
     for by in 0..8 { for bx in 0..8 {
@@ -252,7 +252,7 @@ fn textured_quad_samples_known_gradient() {
     let Some(rt) = RenderTarget::new(&ctx, 64, 64).ok() else { return };
     let pc = tex.push_constants();
     let Some(px) = rt.draw_with_set(&vs, &ps, [0.0, 0.0, 0.0, 0.0],
-        std::slice::from_ref(&tex.set_layout), tex.set, &pc).ok() else { return };
+        std::slice::from_ref(&tex.set_layout), tex.set, &pc, &Default::default()).ok() else { return };
     assert_eq!(px.len(), 64 * 64 * 4);
     let mut max_err = 0.0f32;
     for y in 0..64 {

@@ -118,7 +118,23 @@ between "replay a captured draw" and "drive the game".
   window); the replay now skips empty windows so the heap spans only the table
   address. Replayed 3840x2160 through `VulkanBackend`: vs ad-hoc max err **0**; vs
   D3D12 oracle **RGB max err `[0,0,0]`** (exact), 0 nonzero channels. **Alpha gap:**
-  the oracle keeps alpha 1 (D3D12 clear) while the replay writes the PS's alpha 0
-  — a colorWriteMask/blend-state the record does not yet carry (reported, not
+  the oracle keeps alpha 1 while the replay writes the PS's alpha 0 (reported, not
   asserted). A black draw cannot make the negative controls fail, so the crafted
   variant carries those.
+- **Blend / write-mask stage (done):** the record now carries RT0's
+  `colorWriteMask` + blend state (`BlendState`, the raw 1-based `D3D12_BLEND` /
+  `D3D12_BLEND_OP` codes from the host PSO), and the Vulkan replay applies them
+  (`blend_attachment`). The codes are **1-based** (ZERO=1, ONE=2, SRC_COLOR=3...;
+  ADD=1, SUBTRACT=2...) — an initial 0-based mapping was caught and fixed against a
+  captured blended draw (`src=2,dst=6,op=1` = ONE/INV_SRC_ALPHA/ADD, standard alpha
+  blend). Crafted acceptance (`colour_quad.rs`, 64x64, analytic per-pixel over the
+  black clear): write-mask RGB-only keeps alpha at the clear (max err
+  `[0,5.8e-6,0,0]`, masked alpha exactly 0); SRC_ALPHA/INV_SRC_ALPHA/ADD with PS
+  alpha 0.5 gives RGB x 0.5 and alpha 0.25 (max err `[0,2.9e-6,0,0]`, frac 0); all
+  three negative controls fail (frac 0.746). **Remaining alpha gap:** the real
+  draw's oracle alpha 1 is the target's state *before* the draw (a prior clear/pass),
+  preserved by the draw's mask/blend. The blend is now modeled, but the isolated
+  single-draw replay clears alpha to 0 and does not carry the pre-draw clear value,
+  so reproducing it needs the pre-draw target state too. The frame-250 legal-screen
+  quads are timing-dependent (a re-boot captured different shader pairs, not
+  `fa982323`), so the real draw's own blend was not re-captured this round.

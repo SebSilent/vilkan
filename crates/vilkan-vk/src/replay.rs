@@ -121,9 +121,9 @@ pub fn replay_record(
         }
         let layout = crate::graphics::VertexLayout { stride: *stride, attributes };
         rt.draw_vertices(&res.vs_spirv, &res.ps_spirv, [0.0, 0.0, 0.0, 0.0],
-            &[], vk::DescriptorSet::null(), &pc, &layout, vb, rec.vertex_count)?
+            &[], vk::DescriptorSet::null(), &pc, &layout, vb, rec.vertex_count, &rec.blend)?
     } else {
-        rt.draw_with_set(&res.vs_spirv, &res.ps_spirv, [0.0, 0.0, 0.0, 0.0], &[], vk::DescriptorSet::null(), &pc)?
+        rt.draw_with_set(&res.vs_spirv, &res.ps_spirv, [0.0, 0.0, 0.0, 0.0], &[], vk::DescriptorSet::null(), &pc, &rec.blend)?
     };
     let pixels: Vec<f32> = words.iter().map(|&w| f32::from_bits(w)).collect();
     Ok(ReplayResult { width: target.width, height: target.height, pixels })

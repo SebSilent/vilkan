@@ -175,3 +175,83 @@ fn colour_quad_crafted_cbv_matches_analytic_and_faults_fail() {
         assert!(ffrac > 0.0, "negative control {fault:?} did NOT fail (max {fmax:?})");
     }
 }
+
+/// Acceptance for the blend / write-mask state the record now carries. Two
+/// crafted cases, each checked per-pixel against an analytic expectation over the
+/// replay's black clear, so the D3D12_BLEND / D3D12_BLEND_OP mapping (1-based) and
+/// the colorWriteMask are exercised non-vacuously:
+///
+/// 1. write-mask RGB-only: alpha is masked, so it keeps the clear value (0) while
+///    RGB still matches colour x scale — proves the mask is applied;
+/// 2. SRC_ALPHA / INV_SRC_ALPHA / ADD with the PS alpha driven to 0.5: over a black
+///    clear, RGB = colour x scale x 0.5 and alpha = 0.5 x 0.5 = 0.25 — proves the
+///    blend factors and op. All three negative controls must still fail.
+#[test]
+fn colour_quad_blend_and_write_mask_match_analytic() {
+    let Some(_dir) = fixtures() else {
+        eprintln!("skip: VILKAN_QUAD_FIXTURES unset");
+        return;
+    };
+    let ctx = match Context::new() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("skip: no Vulkan device ({e:#})");
+            return;
+        }
+    };
+    let backend = VulkanBackend::new(&ctx);
+    let tol = 2e-3f32;
+
+    // Case 1: alpha write-mask. RGB written, alpha masked -> keeps the clear (0).
+    {
+        let (mut record, res) = crafted();
+        record.blend.write_mask = 0x7; // R|G|B, no alpha
+        let got = backend.replay(&record, &res, Fault::None).unwrap();
+        let want = ReplayResult {
+            width: W, height: H,
+            pixels: (0..H).flat_map(|y| (0..W).flat_map(move |x| {
+                let e = expected(x, y);
+                [e[0], e[1], e[2], 0.0]
+            })).collect(),
+        };
+        let (max, frac) = compare(&got, &want, tol);
+        eprintln!("write-mask RGB-only: max err {max:?} fraction outside {tol}: {frac:.6}");
+        assert!(frac < 0.01, "alpha write-mask not applied (max {max:?})");
+        let amax = got.pixels.iter().skip(3).step_by(4).map(|f| f.abs()).fold(0.0f32, f32::max);
+        eprintln!("masked alpha max: {amax} (expected 0: clear preserved)");
+        assert_eq!(amax, 0.0, "masked alpha was written (max {amax})");
+    }
+
+    // Case 2: SRC_ALPHA / INV_SRC_ALPHA / ADD blend, PS alpha driven to 0.5.
+    {
+        let (mut record, mut res) = crafted();
+        // Drive the CBV alpha scale to 0.5 so the PS outputs alpha 0.5.
+        let cbv = res.views.iter_mut().find(|(a, _)| *a == CBV_VA).unwrap();
+        cbv.1[0x20 + 12..0x20 + 16].copy_from_slice(&0.5f32.to_le_bytes());
+        record.blend.blend_enable = true;
+        record.blend.src_blend = 5;        // D3D12_BLEND_SRC_ALPHA
+        record.blend.dest_blend = 6;       // D3D12_BLEND_INV_SRC_ALPHA
+        record.blend.blend_op = 1;         // D3D12_BLEND_OP_ADD
+        record.blend.src_blend_alpha = 5;
+        record.blend.dest_blend_alpha = 6;
+        record.blend.blend_op_alpha = 1;
+        let got = backend.replay(&record, &res, Fault::None).unwrap();
+        // Over a black clear: rgb = colour x scale_rgb x srcA(0.5); alpha = srcA^2.
+        let want = ReplayResult {
+            width: W, height: H,
+            pixels: (0..H).flat_map(|y| (0..W).flat_map(move |x| {
+                let e = expected(x, y);
+                [e[0] * 0.5, e[1] * 0.5, e[2] * 0.5, 0.25]
+            })).collect(),
+        };
+        let (max, frac) = compare(&got, &want, tol);
+        eprintln!("SRC_ALPHA blend: max err {max:?} fraction outside {tol}: {frac:.6}");
+        assert!(frac < 0.01, "SRC_ALPHA blend factors/op wrong (max {max:?})");
+        for fault in [Fault::SkipDraw, Fault::CorruptViewBuffer, Fault::WrongPushConstants] {
+            let f = backend.replay(&record, &res, fault).unwrap();
+            let (fm, ff) = compare(&f, &want, tol);
+            eprintln!("blend fault {fault:?}: max err {fm:?} fraction over tol {ff:.6}");
+            assert!(ff > 0.0, "negative control {fault:?} did NOT fail under blend (max {fm:?})");
+        }
+    }
+}

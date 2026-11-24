@@ -18,6 +18,64 @@ pub struct VertexLayout {
     pub attributes: Vec<(u32, u32, vk::Format)>,
 }
 
+/// Map a D3D12_BLEND code to a Vulkan blend factor. The codes are the raw
+/// D3D12_BLEND enum (1-based: ZERO=1, ONE=2, SRC_COLOR=3, ...), exactly as the
+/// capture stores `SrcBlend.0`. The common UI factors are exact; the exotic
+/// constant/dual-source ones fall back to ONE (not seen on these draws).
+fn blend_factor(code: u32) -> vk::BlendFactor {
+    match code {
+        1 => vk::BlendFactor::ZERO,
+        2 => vk::BlendFactor::ONE,
+        3 => vk::BlendFactor::SRC_COLOR,
+        4 => vk::BlendFactor::ONE_MINUS_SRC_COLOR,
+        5 => vk::BlendFactor::SRC_ALPHA,
+        6 => vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
+        7 => vk::BlendFactor::DST_ALPHA,
+        8 => vk::BlendFactor::ONE_MINUS_DST_ALPHA,
+        9 => vk::BlendFactor::DST_COLOR,
+        10 => vk::BlendFactor::ONE_MINUS_DST_COLOR,
+        11 => vk::BlendFactor::SRC_ALPHA_SATURATE,
+        16 => vk::BlendFactor::SRC1_COLOR,
+        17 => vk::BlendFactor::ONE_MINUS_SRC1_COLOR,
+        18 => vk::BlendFactor::SRC1_ALPHA,
+        19 => vk::BlendFactor::ONE_MINUS_SRC1_ALPHA,
+        _ => vk::BlendFactor::ONE,
+    }
+}
+
+/// Map a D3D12_BLEND_OP code to a Vulkan blend op (1-based: ADD=1, SUBTRACT=2,
+/// REVERSE_SUBTRACT=3, MIN=4, MAX=5), exactly as the capture stores `BlendOp.0`.
+fn blend_op(code: u32) -> vk::BlendOp {
+    match code {
+        1 => vk::BlendOp::ADD,
+        2 => vk::BlendOp::SUBTRACT,
+        3 => vk::BlendOp::REVERSE_SUBTRACT,
+        4 => vk::BlendOp::MIN,
+        5 => vk::BlendOp::MAX,
+        _ => vk::BlendOp::ADD,
+    }
+}
+
+/// Build the color-blend attachment from the captured RT0 blend / write-mask
+/// state. With blend off the source overwrites, masked by the write mask (so a
+/// masked alpha channel keeps the clear value, as the D3D12 oracle does).
+fn blend_attachment(b: &vilkan_host::BlendState) -> vk::PipelineColorBlendAttachmentState {
+    let mut mask = vk::ColorComponentFlags::empty();
+    if b.write_mask & 1 != 0 { mask |= vk::ColorComponentFlags::R; }
+    if b.write_mask & 2 != 0 { mask |= vk::ColorComponentFlags::G; }
+    if b.write_mask & 4 != 0 { mask |= vk::ColorComponentFlags::B; }
+    if b.write_mask & 8 != 0 { mask |= vk::ColorComponentFlags::A; }
+    vk::PipelineColorBlendAttachmentState::default()
+        .blend_enable(b.blend_enable)
+        .src_color_blend_factor(blend_factor(b.src_blend))
+        .dst_color_blend_factor(blend_factor(b.dest_blend))
+        .color_blend_op(blend_op(b.blend_op))
+        .src_alpha_blend_factor(blend_factor(b.src_blend_alpha))
+        .dst_alpha_blend_factor(blend_factor(b.dest_blend_alpha))
+        .alpha_blend_op(blend_op(b.blend_op_alpha))
+        .color_write_mask(mask)
+}
+
 /// Map a DXGI format code (the capture's plain integer) to a Vulkan vertex
 /// format. Only the codes the captured draws use are mapped; an unknown code is
 /// an error, not a silent guess. Missing components are filled by Vulkan
@@ -114,32 +172,37 @@ impl<'a> RenderTarget<'a> {
     /// Draw a fullscreen triangle (3 vertices from VertexIndex) with the given
     /// VS/PS SPIR-V and read back the pixels.
     pub fn draw_and_readback(&self, vs_spv: &[u8], ps_spv: &[u8], clear: [f32; 4]) -> Result<Vec<u32>> {
-        self.draw_with_set(vs_spv, ps_spv, clear, &[], vk::DescriptorSet::null(), &[0u32; 36])
+        self.draw_with_set(vs_spv, ps_spv, clear, &[], vk::DescriptorSet::null(), &[0u32; 36], &Default::default())
     }
 
     /// Draw with an optional descriptor set bound at set 0 and explicit push
     /// constant dwords (s0..s31, heap/code base). The textured path uses this.
+    // A low-level draw entry point mirroring the Vulkan pipeline state (shaders,
+    // clear, set, push constants, blend); the arguments are one cohesive draw.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw_with_set(&self, vs_spv: &[u8], ps_spv: &[u8], clear: [f32; 4],
                          set_layouts: &[vk::DescriptorSetLayout], set: vk::DescriptorSet,
-                         pc: &[u32; 36]) -> Result<Vec<u32>> {
-        self.draw_core(vs_spv, ps_spv, clear, set_layouts, set, pc, None, 3)
+                         pc: &[u32; 36], blend_state: &vilkan_host::BlendState) -> Result<Vec<u32>> {
+        self.draw_core(vs_spv, ps_spv, clear, set_layouts, set, pc, None, 3, blend_state)
     }
 
     /// Draw `vertex_count` vertices from a bound vertex buffer (the colour-quad
     /// path: the VS reads vertex attributes, not VertexIndex). `layout` gives the
     /// binding stride and the (location, offset, format) attributes; `vb` is the
     /// buffer bytes. Everything else matches [`Self::draw_with_set`].
+    #[allow(clippy::too_many_arguments)] // cohesive draw state, as draw_with_set
     pub fn draw_vertices(&self, vs_spv: &[u8], ps_spv: &[u8], clear: [f32; 4],
                          set_layouts: &[vk::DescriptorSetLayout], set: vk::DescriptorSet,
                          pc: &[u32; 36], layout: &VertexLayout, vb: &[u8],
-                         vertex_count: u32) -> Result<Vec<u32>> {
-        self.draw_core(vs_spv, ps_spv, clear, set_layouts, set, pc, Some((layout, vb)), vertex_count)
+                         vertex_count: u32, blend_state: &vilkan_host::BlendState) -> Result<Vec<u32>> {
+        self.draw_core(vs_spv, ps_spv, clear, set_layouts, set, pc, Some((layout, vb)), vertex_count, blend_state)
     }
 
+    #[allow(clippy::too_many_arguments)] // cohesive draw state, as draw_with_set
     fn draw_core(&self, vs_spv: &[u8], ps_spv: &[u8], clear: [f32; 4],
                  set_layouts: &[vk::DescriptorSetLayout], set: vk::DescriptorSet,
                  pc: &[u32; 36], vertex: Option<(&VertexLayout, &[u8])>,
-                 vertex_count: u32) -> Result<Vec<u32>> {
+                 vertex_count: u32, blend_state: &vilkan_host::BlendState) -> Result<Vec<u32>> {
         let dev = &self.ctx.device;
         let vs = self.module(vs_spv)?;
         let ps = self.module(ps_spv)?;
@@ -196,8 +259,7 @@ impl<'a> RenderTarget<'a> {
             .line_width(1.0);
         let multisample = vk::PipelineMultisampleStateCreateInfo::default()
             .rasterization_samples(vk::SampleCountFlags::TYPE_1);
-        let blend_attach = vk::PipelineColorBlendAttachmentState::default()
-            .color_write_mask(vk::ColorComponentFlags::RGBA);
+        let blend_attach = blend_attachment(blend_state);
         let blend = vk::PipelineColorBlendStateCreateInfo::default()
             .attachments(std::slice::from_ref(&blend_attach));
         let pipe_info = vk::GraphicsPipelineCreateInfo::default()
@@ -508,7 +570,7 @@ impl<'a> TexturedQuad<'a> {
             }
         }
         rt.draw_with_set(vs, ps, [0.0, 0.0, 0.0, 0.0],
-            std::slice::from_ref(&self.set_layout), self.set, &pc)
+            std::slice::from_ref(&self.set_layout), self.set, &pc, &Default::default())
     }
 }
 

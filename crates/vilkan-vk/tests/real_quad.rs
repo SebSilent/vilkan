@@ -78,10 +78,14 @@ fn real_colour_quad_matches_d3d12_oracle() {
     eprintln!("vs D3D12 oracle: per-channel max err RGBA {max_err:?}");
     eprintln!("nonzero output channels: {nonzero} (expected 0: black OOB scale)");
     // RGB is the descriptor path's actual output and must match exactly. Alpha is
-    // a colorWriteMask/blend-state gap the record does not yet carry (the D3D12
-    // clear keeps alpha 1; the replay writes the PS's alpha 0): reported, not asserted.
+    // reported, not asserted: the D3D12 target held alpha 1 *before* this draw (a
+    // prior clear/pass), and the draw preserves it via its write-mask/blend. The
+    // record now carries the blend/write-mask (see colour_quad.rs's crafted blend
+    // acceptance), but this isolated single-draw replay clears alpha to 0 and does
+    // not yet carry the target's pre-draw clear value, so the preserved alpha cannot
+    // be reproduced here. Closing it needs the pre-draw target state too.
     let rgb_frac = max_err[..3].iter().filter(|&&e| e > 2.0 / 255.0).count();
-    eprintln!("alpha max err {} (colorWriteMask/blend gap, not modeled)", max_err[3]);
+    eprintln!("alpha max err {} (needs blend + pre-draw clear alpha; see docs)", max_err[3]);
     assert_eq!(rgb_frac, 0, "real colour quad RGB disagrees with the D3D12 oracle (max {max_err:?})");
     assert_eq!(nonzero, 0, "expected a black frame (OOB scale 0), got nonzero channels");
 }
