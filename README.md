@@ -1,4 +1,4 @@
-# VIlkan — GTA VI Xbox, native on Linux
+# VIlkan — Cuck Simulator Miami (Xbox), native on Linux
 
 **VIlkan is built on [VIctory](https://github.com/raffclar/victory)** (the Xbox
 Series X|S → Windows compatibility layer), with our own Linux runtime, wave64
