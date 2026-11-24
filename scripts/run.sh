@@ -68,6 +68,10 @@ export VICTORY_DATA_DIR="$(winpath "$VILKAN_DATA/data")"
 export VICTORY_LOG="${VILKAN_LOG:-info}"
 # Backend-neutral draw capture (observes only; the D3D12 path is unchanged).
 export VILKAN_DRAW_CAPTURE="${VILKAN_DRAW_CAPTURE:-}"
+# Also capture a Table-root draw (the colour quad) with its descriptor-table and
+# constant-buffer windows; and the first frame to capture from.
+export VILKAN_DRAW_CAPTURE_TABLE="${VILKAN_DRAW_CAPTURE_TABLE:-}"
+export VILKAN_DRAW_CAPTURE_FRAME="${VILKAN_DRAW_CAPTURE_FRAME:-}"
 export VKD3D_DEBUG="${VKD3D_DEBUG:-warn}"
 export DXVK_LOG_LEVEL="${DXVK_LOG_LEVEL:-warn}"
 

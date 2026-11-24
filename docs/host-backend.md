@@ -66,11 +66,16 @@ become the device/draw interface the live runtime drives, it still needs:
    resource upload/eviction, and a persistent heap whose device address is stable
    across draws (the replay core allocates a fresh heap per call).
 2. **The full root-signature / descriptor model**: the View-only draw uses a null
-   descriptor set. Live draws bind T#/S# (textures/samplers), CBVs and the bindless
-   hash table; the seam needs a `DrawResources` that carries those (descriptor
-   keys, image/sampler handles, constant buffers) and a backend that builds the
-   sets. This is the descriptor machinery the textured path (`TexturedQuad`)
-   prototypes but does not yet generalise.
+   descriptor set. The colour-quad stage (`74bf1d2`) added the **Table -> V# ->
+   CBV** path: a Table root's descriptor window and the constant buffer its V#
+   references ride in `DrawResources.views` (address -> bytes), the replay places
+   them in the heap, and the PS buffer-loads the scale through a physical-storage
+   pointer; vertex input assembly (DXGI 6/28/16) was added. **Still missing for
+   live draws:** T#/S# (textures/samplers) and the bindless hash table — the
+   `TexturedQuad`/`BlurSetup` machinery prototypes these but the seam does not yet
+   build a descriptor set from captured T#/S# keys; root `Constants` dwords; and
+   UAVs. The colour quad needed none of these (its PS is a CBV scale, not a
+   texture), so they remain the gap for the textured draws.
 3. **Render-target / pipeline state**: multiple targets, formats, depth, blend and
    viewport state from the record, not a single float readback target.
 4. **Wave64 exchange (tier C)**: the replay core is exact only on wave32 tier A/B
