@@ -793,11 +793,92 @@ impl State {
                     .DrawInstanced(count, instances, from, first_instance)
             };
             DRAWN.fetch_add(1, Ordering::Relaxed);
+            self.capture(list, count, instances, from);
         }
         if !ran {
             DROPPED.fetch_add(1, Ordering::Relaxed);
             #[cfg(feature = "diagnostics")]
             dropped();
+        }
+    }
+
+    /// Backend-neutral capture of this draw, when `VILKAN_DRAW_CAPTURE` is set.
+    /// Writes one record (shaders, inputs, roots, targets, viewport, vertex
+    /// bytes) for the SPIR-V/Vulkan backend to replay. Observes only; the
+    /// D3D12 path is unchanged.
+    fn capture(&self, list: &HostList, vertices: u32, instances: u32, first: u32) {
+        let Some(folder) = crate::drawcap::folder() else { return };
+        let Some(p) = crate::pipeline::host_pipeline(self.pipeline as This) else { return };
+        if p.compute || p.mesh {
+            return;
+        }
+        use crate::drawcap::*;
+        let ordinal = DRAWN.load(Ordering::Relaxed);
+        let _ = std::fs::create_dir_all(folder);
+        let mut shaders = Vec::new();
+        for stage in &p.stages {
+            let s = &stage.shader;
+            let file = format!("{}.bin", s.hash);
+            let _ = std::fs::write(folder.join(&file), s.container_bytes());
+            shaders.push(ShaderRecord {
+                stage: s.stage.to_string(),
+                hash: s.hash.clone(),
+                container_file: file,
+            });
+        }
+        let inputs = p.inputs.iter().map(|e| VertexInput {
+            slot: e.slot, offset: e.offset, format: e.format, per_instance: e.per_instance,
+        }).collect();
+        let roots = self.graphics.iter().map(|r| match r {
+            Root::None => RootBinding::None,
+            Root::Table(a) => RootBinding::Table { address: *a },
+            Root::Constants(d) => RootBinding::Constants { dwords: d.clone() },
+            Root::View(a) => RootBinding::View { address: *a },
+        }).collect();
+        let mut vertex_buffers = Vec::new();
+        for slot in 0..32 {
+            let v = self.vertex[slot];
+            if v.address == 0 || v.stride == 0 || v.size == 0 {
+                continue;
+            }
+            // Console memory is unified: the vertex address is a CPU pointer.
+            // SAFETY: the title's bound vertex buffer lies in its own memory.
+            let bytes = unsafe { std::slice::from_raw_parts(v.address as *const u8, v.size as usize) };
+            let file = format!("vb{slot}-{}.bin", ordinal);
+            let _ = std::fs::write(folder.join(&file), bytes);
+            vertex_buffers.push(VertexBuffer { slot: slot as u32, stride: v.stride, data_file: file });
+        }
+        let targets: Vec<RenderTarget> = self.targets.iter().filter_map(|&t| {
+            crate::resource::target_info(t as This)
+                .map(|(format, width, height)| RenderTarget { format, width, height })
+        }).collect();
+        // The viewport is the render target extent (the title sets it to the
+        // target); the record carries it for the replay.
+        let (vw, vh) = targets.first().map(|t| (t.width, t.height)).unwrap_or((0, 0));
+        let rec = DrawRecord {
+            frame: crate::frame::current(),
+            ordinal,
+            topology: self.topology,
+            vertex_count: vertices,
+            instance_count: instances,
+            first_vertex: first,
+            shaders,
+            inputs,
+            vertex_buffers,
+            roots,
+            targets,
+            viewport: Viewport {
+                x: 0.0, y: 0.0, width: vw as f32, height: vh as f32,
+                min_depth: 0.0, max_depth: 1.0,
+            },
+        };
+        let path = folder.join(format!("draw-{ordinal}.json"));
+        match serde_json::to_string_pretty(&rec) {
+            Ok(json) => {
+                let _ = std::fs::write(&path, json);
+                tracing::info!(path = %path.display(), "draw captured");
+            }
+            Err(e) => tracing::warn!(error = %e, "draw capture serialize failed"),
         }
     }
 

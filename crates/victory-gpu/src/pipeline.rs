@@ -102,6 +102,11 @@ pub(crate) struct Translated {
 
 #[cfg(windows)]
 impl Shader {
+    /// The console container bytes, for backend-neutral draw capture.
+    pub(crate) fn container_bytes(&self) -> &[u8] {
+        &self.container
+    }
+
     /// The translation, made on first use; a shader that does not
     /// translate is logged once.
     pub(crate) fn translated(&self) -> Option<&Translated> {

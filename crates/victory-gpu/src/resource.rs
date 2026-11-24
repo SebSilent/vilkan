@@ -874,6 +874,15 @@ fn host_texture(
 }
 
 /// A texture's console memory and description; `None` for buffers.
+/// A render target's (format, width, height), for backend-neutral draw capture.
+pub(crate) fn target_info(this: This) -> Option<(u32, u32, u32)> {
+    if this.is_null() {
+        return None;
+    }
+    let r = resource(this);
+    Some((r.desc.format, r.desc.width as u32, r.desc.height))
+}
+
 pub(crate) fn texture_memory(this: This) -> Option<(*const u8, ResourceDesc)> {
     if this.is_null() {
         return None;
