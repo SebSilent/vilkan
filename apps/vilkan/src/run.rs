@@ -33,6 +33,14 @@ pub fn run(
         _ => "DX12",
     };
     println!("backend        {backend}");
+    // Self-identify the active mitigation set alongside the backend label, so
+    // a run log can never be misattributed to the wrong backend or the wrong
+    // stacked-change set. All-on is behaviourally identical to the
+    // un-toggleable code; the switches exist only for post-ban attribution.
+    println!(
+        "mitigations    [{backend}] {}",
+        victory_gpu::mitigations::active_set()
+    );
 
     let images = cfg.cache_subdir("images")?;
     victory_hle::modules::d3d12x::use_shader_cache(cfg.cache_subdir("shaders")?);

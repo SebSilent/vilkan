@@ -298,18 +298,28 @@ pub(crate) fn find(address: u64, len: u64) -> Option<Arc<Shadow>> {
     // silence before the 1a watchdog crash).
     let key = {
         let map = buffers();
-        // O(log n) BTree seek, not a scan: the containing buffer is the
-        // greatest start <= address (the title's allocations are distinct).
-        // The 174 MB indirect argument buffer is found because its start is
-        // the predecessor of any address inside it. If the predecessor does
-        // not cover the range (a gap, or a sub-allocation), fall through to
-        // loose(), which shadows the raw memory. Complexity: the original
-        // take(64) was O(64) but missed large containers; the uncapped scan
-        // was O(n) per draw/dispatch (a stall risk); this is O(log n).
-        map.range(..=(address, usize::MAX))
-            .next_back()
-            .filter(|(_, e)| e.end >= end)
-            .map(|(k, _)| *k)
+        if crate::mitigations::get().shadow_seek {
+            // O(log n) BTree seek, not a scan: the containing buffer is the
+            // greatest start <= address (the title's allocations are distinct).
+            // The 174 MB indirect argument buffer is found because its start is
+            // the predecessor of any address inside it. If the predecessor does
+            // not cover the range (a gap, or a sub-allocation), fall through to
+            // loose(), which shadows the raw memory. Complexity: the original
+            // take(64) was O(64) but missed large containers; the uncapped scan
+            // was O(n) per draw/dispatch (a stall risk); this is O(log n).
+            map.range(..=(address, usize::MAX))
+                .next_back()
+                .filter(|(_, e)| e.end >= end)
+                .map(|(k, _)| *k)
+        } else {
+            // Attribution: shadow-seek OFF => the original capped scan
+            // (take 64), which missed large containers (the 4 signature
+            // drops). All-on uses the seek above, unchanged.
+            map.iter()
+                .take(64)
+                .find(|((start, _), e)| *start <= address && e.end >= end)
+                .map(|(k, _)| *k)
+        }
     };
     let Some(key) = key else {
         return loose(address, end);

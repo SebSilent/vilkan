@@ -1177,7 +1177,14 @@ extern "system" fn execute_indirect(
         // our own implementation, our VICTORY_INDIRECT gate kept.
         const DISPATCH: u32 = 2;
         const DISPATCH_SINGLE: u32 = 105;
-        let kind = if *kind == DISPATCH_SINGLE { DISPATCH } else { *kind };
+        // Attribution: dispatch-single OFF => type 105 is not remapped (it
+        // falls through to the no-host-signature drop). All-on maps it,
+        // unchanged.
+        let kind = if crate::mitigations::get().dispatch_single && *kind == DISPATCH_SINGLE {
+            DISPATCH
+        } else {
+            *kind
+        };
         with_state(this, |list, s| {
             ran = s.execute_indirect(list, (kind, stride, max), address, counter);
         });

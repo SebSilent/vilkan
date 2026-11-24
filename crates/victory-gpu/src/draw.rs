@@ -1111,7 +1111,13 @@ impl State {
             s.refresh(list, *at, 4);
         }
         // Bounded first: the clamp binds a compute pipeline of its own.
-        if !crate::indirect::bound(list, &args.buffer, args.gpu(arguments), (kind, stride, max)) {
+        // Attribution: arg-clamp OFF => ExecuteIndirect runs on the raw
+        // argument counts (the pre-clamp path, E5005 driver-reset risk).
+        // All-on clamps on the GPU first, unchanged.
+        let clamp = crate::mitigations::get().arg_clamp;
+        if clamp
+            && !crate::indirect::bound(list, &args.buffer, args.gpu(arguments), (kind, stride, max))
+        {
             tracing::warn!(kind, "indirect drop: clamp bound failed");
             return false;
         }
@@ -1133,7 +1139,9 @@ impl State {
             _ => false,
         };
         if !ran {
-            crate::indirect::done(list, &args.buffer);
+            if clamp {
+                crate::indirect::done(list, &args.buffer);
+            }
             return false;
         }
         #[cfg(feature = "diagnostics")]
@@ -1152,7 +1160,9 @@ impl State {
                 counter.as_ref().map_or(0, |(s, at)| s.offset(*at)),
             )
         };
-        crate::indirect::done(list, &args.buffer);
+        if clamp {
+            crate::indirect::done(list, &args.buffer);
+        }
         if kind == DISPATCH {
             DISPATCHED.fetch_add(1, Ordering::Relaxed);
         } else {

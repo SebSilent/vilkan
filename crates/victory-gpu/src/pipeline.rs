@@ -445,14 +445,21 @@ fn hand_out(
         // Send (Arc<Shader>, Arc<GraphicsState>); errors take the refusal
         // path inside HostPipeline::new, a panic is caught by the pool, and
         // device loss surfaces as a refused result — never a crash.
-        let job_shaders = shaders.clone();
-        let job_graphics = graphics.clone();
-        // The pool sets the slot on success, error AND panic; a full queue
-        // falls back to inline compilation at first use (never blocks here).
-        crate::hostpool::submit(
-            move || host::HostPipeline::new(&job_shaders, job_graphics.as_deref()),
-            Arc::clone(&slot),
-        );
+        if crate::mitigations::get().pool {
+            let job_shaders = shaders.clone();
+            let job_graphics = graphics.clone();
+            // The pool sets the slot on success, error AND panic; a full queue
+            // falls back to inline compilation at first use (never blocks here).
+            crate::hostpool::submit(
+                move || host::HostPipeline::new(&job_shaders, job_graphics.as_deref()),
+                Arc::clone(&slot),
+            );
+        } else {
+            // Attribution: pool OFF => the pre-pool synchronous path. Mark the
+            // slot abandoned so host_pipeline compiles inline at first use
+            // (no background thread, no budget wait). All-on is unchanged.
+            slot.abandon();
+        }
     }
     let pipeline = Box::new(Pipeline {
         object: Object::new(&FUNCTIONS),

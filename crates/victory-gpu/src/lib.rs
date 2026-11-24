@@ -34,6 +34,7 @@ mod hostpool;
 #[cfg(windows)]
 mod indirect;
 pub mod list;
+pub mod mitigations;
 pub mod object;
 pub mod pipeline;
 #[cfg(windows)]

@@ -653,14 +653,18 @@ fn close_lane(id: u64) {
     // clearing without storing left entry 0 pending since boot (25-38M
     // polls). Real hardware cancels pending requests on close. Complete the
     // unsubmitted Status commands and the submitted statuses before clearing.
-    for command in &lane.unsubmitted {
-        if let Command::Status(status) = command {
+    if victory_gpu::mitigations::get().close_abort {
+        for command in &lane.unsubmitted {
+            if let Command::Status(status) = command {
+                status.entry().store(E_ABORT, Ordering::Release);
+            }
+        }
+        for (_, status) in &lane.statuses {
             status.entry().store(E_ABORT, Ordering::Release);
         }
     }
-    for (_, status) in &lane.statuses {
-        status.entry().store(E_ABORT, Ordering::Release);
-    }
+    // Attribution: close-abort OFF => the pre-fix behaviour (statuses cleared
+    // while still E_PENDING). All-on completes them, unchanged.
     lane.unsubmitted.clear();
     lane.reads.clear();
     lane.statuses.clear(); // releases their arrays
