@@ -292,7 +292,19 @@ extern "system" fn status_result(this: Array, index: u32) -> HRESULT {
 /// Chores Simulator Miami polls this (entry 0, a `Sleep(1)` loop) and never
 /// reads the result itself.
 extern "system" fn is_complete(this: Array, index: u32) -> bool {
-    status_result(this, index) != E_PENDING
+    let done = status_result(this, index) != E_PENDING;
+    // Discriminate a streaming stall: the title polls this in a Sleep(1)
+    // loop; count polls that find the entry still pending and log once per
+    // 2000, so a wait we never signal is visible (logs only).
+    if !done {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static PENDING_POLLS: AtomicU64 = AtomicU64::new(0);
+        let n = PENDING_POLLS.fetch_add(1, Ordering::Relaxed) + 1;
+        if n % 2000 == 0 {
+            tracing::warn!(index, pending_polls = n, "dstorage entry still pending");
+        }
+    }
+    done
 }
 
 static STATUS_VTABLE: Methods<5> = Methods([

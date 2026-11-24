@@ -285,6 +285,14 @@ pub extern "system" fn TerminateProcess(process: *mut c_void, code: u32) -> i32 
     host::terminate_process(process, code)
 }
 
+/// The Win32 process exit (`kernel32!ExitProcess`): logged like [`exit`],
+/// then forwarded. Without this the guest's clean quit is invisible (the
+/// CRT exit and a direct ExitProcess both reach the host unlogged).
+pub extern "system" fn ExitProcess(code: u32) -> ! {
+    tracing::warn!(code, from = %host::callers(), "title ExitProcess");
+    host::exit_process(code)
+}
+
 /// The pseudo handle of one of our modules: its address, never a real image.
 fn handle(m: &HleModule) -> *mut c_void {
     m as *const HleModule as *mut c_void
@@ -381,6 +389,7 @@ pub(crate) fn module() -> HleModule {
             hle_export!(terminate),
             hle_export!(_invalid_parameter_noinfo_noreturn),
             hle_export!(TerminateProcess),
+            hle_export!(ExitProcess),
             hle_export!(SetUnhandledExceptionFilter),
         ],
     }
@@ -402,7 +411,7 @@ mod host {
         DisableThreadLibraryCalls, GetModuleFileNameA, GetModuleFileNameW, GetModuleHandleA,
         GetModuleHandleW, GetProcAddress, LoadLibraryExA, LoadLibraryExW,
     };
-    use windows_sys::Win32::System::Threading::TerminateProcess;
+    use windows_sys::Win32::System::Threading::{ExitProcess, TerminateProcess};
 
     unsafe extern "C" {
         #[link_name = "exit"]
@@ -484,6 +493,11 @@ mod host {
     pub(super) fn terminate_process(process: *mut c_void, code: u32) -> i32 {
         // SAFETY: see above.
         unsafe { TerminateProcess(process, code) }
+    }
+
+    pub(super) fn exit_process(code: u32) -> ! {
+        // SAFETY: see above.
+        unsafe { ExitProcess(code) }
     }
 
     pub(super) fn set_unhandled_exception_filter(filter: extern "system" fn(*const c_void) -> i32) {
@@ -578,6 +592,10 @@ mod host {
     }
 
     pub(super) fn terminate_process(_: *mut c_void, code: u32) -> i32 {
+        std::process::exit(code as i32)
+    }
+
+    pub(super) fn exit_process(code: u32) -> ! {
         std::process::exit(code as i32)
     }
 
