@@ -145,6 +145,11 @@ pub struct DrawRecord {
     /// RT0 blend / write-mask state (defaults to D3D12 overwrite when absent).
     #[serde(default)]
     pub blend: BlendState,
+    /// RT0's pre-draw clear color (defaults to black for records that lack it).
+    /// A masked/blended draw preserves the channels it does not write, so the
+    /// replay clears to this value to reproduce them.
+    #[serde(default)]
+    pub clear_color: [f32; 4],
 }
 
 impl DrawRecord {

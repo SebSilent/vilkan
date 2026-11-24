@@ -945,6 +945,9 @@ impl State {
             blend: crate::pipeline::host_pipeline(self.pipeline as This)
                 .map(|p| p.blend.clone())
                 .unwrap_or_default(),
+            clear_color: self.targets.first()
+                .and_then(|&t| crate::drawcap::clear_color(t))
+                .unwrap_or([0.0, 0.0, 0.0, 0.0]),
             viewport: Viewport {
                 x: 0.0, y: 0.0, width: vw as f32, height: vh as f32,
                 min_depth: 0.0, max_depth: 1.0,

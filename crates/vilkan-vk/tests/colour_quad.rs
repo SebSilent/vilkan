@@ -254,4 +254,37 @@ fn colour_quad_blend_and_write_mask_match_analytic() {
             assert!(ff > 0.0, "negative control {fault:?} did NOT fail under blend (max {fm:?})");
         }
     }
+
+    // Case 3: pre-draw clear preservation (the real colour quad's alpha gap). The
+    // target was cleared to alpha 1; the draw masks alpha and its PS outputs alpha
+    // 0, so the result keeps the cleared alpha 1. Discriminating for BOTH the
+    // clear-color path (a black clear would give alpha 0) and the write-mask (an
+    // unmasked alpha would write the PS's 0).
+    {
+        let (mut record, mut res) = crafted();
+        record.clear_color = [0.0, 0.0, 0.0, 1.0];
+        record.blend.write_mask = 0x7; // R|G|B, no alpha
+        let cbv = res.views.iter_mut().find(|(a, _)| *a == CBV_VA).unwrap();
+        cbv.1[0x20 + 12..0x20 + 16].copy_from_slice(&0.0f32.to_le_bytes()); // PS alpha 0
+        let got = backend.replay(&record, &res, Fault::None).unwrap();
+        let want = ReplayResult {
+            width: W, height: H,
+            pixels: (0..H).flat_map(|y| (0..W).flat_map(move |x| {
+                let e = expected(x, y);
+                [e[0], e[1], e[2], 1.0] // cleared alpha preserved
+            })).collect(),
+        };
+        let (max, frac) = compare(&got, &want, tol);
+        eprintln!("clear-preserved alpha: max err {max:?} fraction outside {tol}: {frac:.6}");
+        assert!(frac < 0.01, "pre-draw clear alpha not preserved (max {max:?})");
+        let amin = got.pixels.iter().skip(3).step_by(4).copied().fold(1.0f32, f32::min);
+        eprintln!("preserved alpha min: {amin} (expected 1: clear kept)");
+        assert_eq!(amin, 1.0, "cleared alpha was overwritten (min {amin})");
+        for fault in [Fault::SkipDraw, Fault::CorruptViewBuffer, Fault::WrongPushConstants] {
+            let f = backend.replay(&record, &res, fault).unwrap();
+            let (fm, ff) = compare(&f, &want, tol);
+            eprintln!("clear fault {fault:?}: max err {fm:?} fraction over tol {ff:.6}");
+            assert!(ff > 0.0, "negative control {fault:?} did NOT fail under clear (max {fm:?})");
+        }
+    }
 }

@@ -106,9 +106,12 @@ pub fn replay_record(
     pc[32] = heap.address as u32;
     pc[33] = (heap.address >> 32) as u32;
 
+    // The replay clears to the target's pre-draw state so a masked/blended draw
+    // preserves the channels it does not write (e.g. a cleared alpha of 1).
+    let clear = rec.clear_color;
     let words = if fault == Fault::SkipDraw {
         // No draw: read back the cleared target.
-        rt.clear_and_readback([0.0, 0.0, 0.0, 0.0])?
+        rt.clear_and_readback(clear)?
     } else if let Some((slot, stride, vb)) = res.vertex_buffers.first() {
         // A vertex-buffer draw (the colour quad): build the input layout from the
         // record's elements and draw vertex_count vertices from the bound buffer.
@@ -120,10 +123,10 @@ pub fn replay_record(
             attributes.push((loc as u32, e.offset, crate::graphics::dxgi_vertex_format(e.format)?));
         }
         let layout = crate::graphics::VertexLayout { stride: *stride, attributes };
-        rt.draw_vertices(&res.vs_spirv, &res.ps_spirv, [0.0, 0.0, 0.0, 0.0],
+        rt.draw_vertices(&res.vs_spirv, &res.ps_spirv, clear,
             &[], vk::DescriptorSet::null(), &pc, &layout, vb, rec.vertex_count, &rec.blend)?
     } else {
-        rt.draw_with_set(&res.vs_spirv, &res.ps_spirv, [0.0, 0.0, 0.0, 0.0], &[], vk::DescriptorSet::null(), &pc, &rec.blend)?
+        rt.draw_with_set(&res.vs_spirv, &res.ps_spirv, clear, &[], vk::DescriptorSet::null(), &pc, &rec.blend)?
     };
     let pixels: Vec<f32> = words.iter().map(|&w| f32::from_bits(w)).collect();
     Ok(ReplayResult { width: target.width, height: target.height, pixels })

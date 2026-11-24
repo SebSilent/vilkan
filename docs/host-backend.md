@@ -131,10 +131,18 @@ between "replay a captured draw" and "drive the game".
   black clear): write-mask RGB-only keeps alpha at the clear (max err
   `[0,5.8e-6,0,0]`, masked alpha exactly 0); SRC_ALPHA/INV_SRC_ALPHA/ADD with PS
   alpha 0.5 gives RGB x 0.5 and alpha 0.25 (max err `[0,2.9e-6,0,0]`, frac 0); all
-  three negative controls fail (frac 0.746). **Remaining alpha gap:** the real
-  draw's oracle alpha 1 is the target's state *before* the draw (a prior clear/pass),
-  preserved by the draw's mask/blend. The blend is now modeled, but the isolated
-  single-draw replay clears alpha to 0 and does not carry the pre-draw clear value,
-  so reproducing it needs the pre-draw target state too. The frame-250 legal-screen
-  quads are timing-dependent (a re-boot captured different shader pairs, not
-  `fa982323`), so the real draw's own blend was not re-captured this round.
+  three negative controls fail (frac 0.746).
+- **Pre-draw clear color (done):** the record carries RT0's last full
+  `ClearRenderTargetView` color (`clear_color`); the replay clears to it instead of
+  black, so a masked/blended draw preserves the cleared channels. Crafted acceptance
+  (`colour_quad.rs` case 3): clear alpha 1 + RGB-only mask + PS alpha 0 keeps alpha
+  exactly 1 (max err `[0,5.8e-6,0,0]`, frac 0); all three negative controls fail
+  (frac 0.496). Also fixed `drawcap::folder()` to treat an empty `VILKAN_DRAW_CAPTURE`
+  as disabled (run.sh exports it empty by default; `var_os` had treated "" as Some).
+  **Remaining alpha gap (scoped, not closed):** a capture boot confirmed the title's
+  `ClearRenderTargetView` calls are *all black* (252 clears, every one `[0,0,0,0]`),
+  so the real `fa982323` oracle's preserved alpha 1 comes from *prior draw content*,
+  not a clear. Reproducing it needs a **pre-draw target readback** (the target's
+  contents before the draw), a larger feature than the clear color — out of scope
+  here. The frame-250 legal quads are also timing-dependent (re-boots capture
+  different shader pairs, not `fa982323`).

@@ -694,6 +694,11 @@ extern "system" fn clear_rtv(
             // SAFETY: the title passes `count` rectangles, laid out as the host's.
             unsafe { std::slice::from_raw_parts(rects.cast(), count as usize) }
         });
+        // A full-target clear sets the pre-draw state a later masked/blended draw
+        // composites over; record it for the draw capture (partial clears skip).
+        if rects.is_none() {
+            crate::drawcap::note_clear(record.resource as usize, *color);
+        }
         const RENDER_TARGET: u32 = 0x4;
         let rtv = host.rtv(texture, record.desc().as_ref());
         // SAFETY: an open list, a fresh view of a live texture.

@@ -131,15 +131,51 @@ pub struct DrawRecord {
     pub targets: Vec<RenderTarget>,
     /// RT0 blend / write-mask state from the bound pipeline.
     pub blend: BlendState,
+    /// RT0's last full clear color before this draw (the pre-draw target state).
+    /// A masked/blended draw preserves the channels it does not write, so the
+    /// replay must clear to this value, not to black, to reproduce them.
+    #[serde(default = "black")]
+    pub clear_color: [f32; 4],
     pub viewport: Viewport,
     /// The D3D12 render-target readback for this draw (the oracle), if captured.
     pub oracle_file: Option<String>,
+}
+
+fn black() -> [f32; 4] {
+    [0.0, 0.0, 0.0, 0.0]
+}
+
+/// RT0's last full clear color, keyed by the target resource pointer. The title
+/// clears a target then draws into it; a masked/blended draw leaves the cleared
+/// channels intact, so the record carries the clear the draw composites over.
+static CLEAR_COLORS: std::sync::Mutex<Option<std::collections::HashMap<usize, [f32; 4]>>> =
+    std::sync::Mutex::new(None);
+
+/// Record a full-target clear (called from `ClearRenderTargetView`). Only tracked
+/// while draw capture is enabled; partial (rect) clears are ignored.
+pub fn note_clear(resource: usize, color: [f32; 4]) {
+    if folder().is_none() {
+        return;
+    }
+    let mut g = CLEAR_COLORS.lock().unwrap_or_else(|e| e.into_inner());
+    g.get_or_insert_with(std::collections::HashMap::new).insert(resource, color);
+}
+
+/// The last full clear color recorded for `resource`, if any.
+pub fn clear_color(resource: usize) -> Option<[f32; 4]> {
+    CLEAR_COLORS.lock().unwrap_or_else(|e| e.into_inner()).as_ref()?.get(&resource).copied()
 }
 
 /// Whether capture is enabled, and where.
 pub fn folder() -> Option<&'static std::path::PathBuf> {
     use std::sync::OnceLock;
     static F: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
-    F.get_or_init(|| std::env::var_os("VILKAN_DRAW_CAPTURE").map(std::path::PathBuf::from))
-        .as_ref()
+    // An empty value disables capture (run.sh exports it empty by default);
+    // `var_os` would otherwise treat "" as Some and write to the working dir.
+    F.get_or_init(|| {
+        std::env::var_os("VILKAN_DRAW_CAPTURE")
+            .filter(|s| !s.is_empty())
+            .map(std::path::PathBuf::from)
+    })
+    .as_ref()
 }
