@@ -50,6 +50,12 @@ pub fn replay_record(
     // root-view buffer at its console address.
     let mut heap_end: u64 = 0;
     for (address, data) in &res.views {
+        // An empty window carries no bytes the shader reads (e.g. a CBV the
+        // capture could not map, whose load the shader's OOB branch skips anyway).
+        // Skipping it keeps the heap from spanning a wild, unmapped console VA.
+        if data.is_empty() {
+            continue;
+        }
         heap_end = heap_end.max(address + data.len() as u64);
     }
     let heap_size = (heap_end.max(1 << 20)) as usize;
@@ -62,6 +68,9 @@ pub fn replay_record(
     let table_addrs: Vec<u64> = rec.roots.iter()
         .filter(|r| r.kind == "Table").filter_map(|r| r.address).collect();
     for (address, data) in &res.views {
+        if data.is_empty() {
+            continue;
+        }
         let mut data = data.clone();
         if fault == Fault::CorruptViewBuffer && !table_addrs.contains(address) {
             for b in data.iter_mut() {

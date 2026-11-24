@@ -106,3 +106,19 @@ between "replay a captured draw" and "drive the game".
     channel flips 1→0). All three fail, as required.
   - The trait is object-safe and record-driven (a `&dyn HostBackend` driven with
     an in-memory record + resources, no directory).
+- **Descriptor stage (done, `74bf1d2`):** the colour quad's Table -> V# -> CBV
+  path. Crafted non-uniform CBV (64x64): vs ad-hoc max err `[0,0,0,0]` frac 0; vs
+  analytic colour x scale max err `[0,5.8e-6,0,0]` frac outside 2e-3 = 0; 64
+  distinct reds; all three negative controls fail (frac 0.746).
+- **Real captured colour quad (done):** frame-250 ordinal 1779, whose DXBC
+  containers are byte-identical to the translated `fa982323` pair. Its captured V#
+  has `num_records = 1`, stride 0, so the PS's scale load at +0x20 is OOB and the
+  guarded load branch is skipped -> scale 0 -> the D3D12 oracle is black. The
+  referenced CBV is at a ~54 TB console VA the capture could not map (an empty
+  window); the replay now skips empty windows so the heap spans only the table
+  address. Replayed 3840x2160 through `VulkanBackend`: vs ad-hoc max err **0**; vs
+  D3D12 oracle **RGB max err `[0,0,0]`** (exact), 0 nonzero channels. **Alpha gap:**
+  the oracle keeps alpha 1 (D3D12 clear) while the replay writes the PS's alpha 0
+  — a colorWriteMask/blend-state the record does not yet carry (reported, not
+  asserted). A black draw cannot make the negative controls fail, so the crafted
+  variant carries those.
