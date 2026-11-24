@@ -7,7 +7,7 @@
 //! Acceptance is the correct pixels, not "it drew something".
 
 use vilkan_vk::Context;
-use vilkan_vk::graphics::RenderTarget;
+use vilkan_vk::graphics::{RenderTarget, TexturedQuad};
 
 fn fixture(name: &str) -> Option<Vec<u8>> {
     let dir = std::env::var_os("VILKAN_VK_FIXTURES")?;
@@ -81,4 +81,47 @@ fn fullscreen_triangle_gradient_is_exact() {
         }
     }
     eprintln!("fullscreen gradient: 4096 pixels, max err {max_err:.2e} ✓");
+}
+
+/// ps_tex samples an 8x8 gradient texture (texel (i,j) = (i/8, j/8, 0.5, 1))
+/// through the crafted bindless set, at the UV vs_ids runs 0..1 over a 64x64
+/// target. With a nearest sampler, pixel (x,y) reads texel
+/// (floor((x+0.5)/8), floor((y+0.5)/8)). Check the output against that.
+#[test]
+fn textured_quad_samples_known_gradient() {
+    let Some(vs) = fixture("vs_ids.spv") else { return };
+    let Some(ps) = fixture("ps_tex.spv") else { return };
+    let Some(ctx) = context() else { return };
+    let Some(tex) = TexturedQuad::new(&ctx, 8, 8).ok() else { return };
+    // 8x8 gradient texels as RGBA8 UNORM.
+    let mut texels = vec![0u32; 64];
+    for j in 0..8 {
+        for i in 0..8 {
+            let r = ((i as f32 / 8.0) * 255.0).round() as u32;
+            let g = ((j as f32 / 8.0) * 255.0).round() as u32;
+            texels[j * 8 + i] = r | (g << 8) | (128 << 16) | (255 << 24);
+        }
+    }
+    if tex.upload(&texels).is_err() { return; }
+    let Some(rt) = RenderTarget::new(&ctx, 64, 64).ok() else { return };
+    let pc = tex.push_constants();
+    let Some(px) = rt.draw_with_set(&vs, &ps, [0.0, 0.0, 0.0, 0.0],
+        std::slice::from_ref(&tex.set_layout), tex.set, &pc).ok() else { return };
+    assert_eq!(px.len(), 64 * 64 * 4);
+    let mut max_err = 0.0f32;
+    for y in 0..64 {
+        for x in 0..64 {
+            let tx = ((x as f32 + 0.5) / 8.0).floor() as usize;
+            let ty = ((y as f32 + 0.5) / 8.0).floor() as usize;
+            let want_r = tx as f32 / 8.0;
+            let want_g = ty as f32 / 8.0;
+            let p = (y * 64 + x) * 4;
+            let r = f32_at(&px, p);
+            let g = f32_at(&px, p + 1);
+            let err = (r - want_r).abs().max((g - want_g).abs());
+            max_err = max_err.max(err);
+            assert!(err < 0.02, "pixel ({x},{y}): r={r} want {want_r}, g={g} want {want_g} (texel {tx},{ty})");
+        }
+    }
+    eprintln!("textured quad: 4096 pixels, max err {max_err:.2e} ✓");
 }

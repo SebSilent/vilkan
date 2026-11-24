@@ -93,6 +93,14 @@ impl<'a> RenderTarget<'a> {
     /// Draw a fullscreen triangle (3 vertices from VertexIndex) with the given
     /// VS/PS SPIR-V and read back the pixels.
     pub fn draw_and_readback(&self, vs_spv: &[u8], ps_spv: &[u8], clear: [f32; 4]) -> Result<Vec<u32>> {
+        self.draw_with_set(vs_spv, ps_spv, clear, &[], vk::DescriptorSet::null(), &[0u32; 36])
+    }
+
+    /// Draw with an optional descriptor set bound at set 0 and explicit push
+    /// constant dwords (s0..s31, heap/code base). The textured path uses this.
+    pub fn draw_with_set(&self, vs_spv: &[u8], ps_spv: &[u8], clear: [f32; 4],
+                         set_layouts: &[vk::DescriptorSetLayout], set: vk::DescriptorSet,
+                         pc: &[u32; 36]) -> Result<Vec<u32>> {
         let dev = &self.ctx.device;
         let vs = self.module(vs_spv)?;
         let ps = self.module(ps_spv)?;
@@ -101,6 +109,7 @@ impl<'a> RenderTarget<'a> {
             .stage_flags(vk::ShaderStageFlags::ALL_GRAPHICS)
             .offset(0).size(crate::PC_BYTES as u32);
         let pl_info = vk::PipelineLayoutCreateInfo::default()
+            .set_layouts(set_layouts)
             .push_constant_ranges(std::slice::from_ref(&pc_range));
         // SAFETY: valid device/range.
         let layout = unsafe { dev.create_pipeline_layout(&pl_info, None) }?;
@@ -155,8 +164,10 @@ impl<'a> RenderTarget<'a> {
             unsafe { dev.cmd_begin_render_pass(cmd, &rp_begin, vk::SubpassContents::INLINE) };
             // SAFETY: valid command buffer/pipeline.
             unsafe { dev.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline) };
-            let mut pc = [0u32; 36];
-            pc[32] = 0; pc[33] = 0; // heap base (unused by these fixtures)
+            if set != vk::DescriptorSet::null() {
+                // SAFETY: valid command buffer/layout/set.
+                unsafe { dev.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::GRAPHICS, layout, 0, std::slice::from_ref(&set), &[]) };
+            }
             let pc_bytes: &[u8] = unsafe { std::slice::from_raw_parts(pc.as_ptr() as *const u8, crate::PC_BYTES) };
             // SAFETY: valid command buffer/layout, pc bytes live.
             unsafe { dev.cmd_push_constants(cmd, layout, vk::ShaderStageFlags::ALL_GRAPHICS, 0, pc_bytes) };
@@ -200,6 +211,160 @@ impl<'a> RenderTarget<'a> {
         // SAFETY: readback buffer/memory owned here.
         unsafe { dev.destroy_buffer(buf, None); dev.free_memory(mem, None) };
         Ok(out)
+    }
+}
+
+/// A minimal crafted bindless set for a textured fullscreen draw: one sampled
+/// image (binding 0), a nearest sampler (binding 1), and the FNV-1a descriptor
+/// hash table (binding 2). The shader reads a T# at heap+0 and an S# at heap+32
+/// (s2:s3 = 0), hashes them, and the table maps them to image/sampler index 0.
+/// Reuses the bindless hash-table helpers; not a full descriptor runtime.
+pub struct TexturedQuad<'a> {
+    ctx: &'a Context,
+    pub set_layout: vk::DescriptorSetLayout,
+    pool: vk::DescriptorPool,
+    pub set: vk::DescriptorSet,
+    heap: crate::Heap<'a>,
+    table_buffer: vk::Buffer,
+    table_memory: vk::DeviceMemory,
+    image: vk::Image,
+    image_memory: vk::DeviceMemory,
+    view: vk::ImageView,
+    sampler: vk::Sampler,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl<'a> TexturedQuad<'a> {
+    pub fn new(ctx: &'a Context, w: u32, h: u32) -> Result<Self> {
+        use crate::bindless::{build_hash_table, tsharp_key, HEAP_SIZE};
+        let dev = &ctx.device;
+        let bindings_def = [
+            (0u32, vk::DescriptorType::SAMPLED_IMAGE),
+            (1, vk::DescriptorType::SAMPLER),
+            (2, vk::DescriptorType::STORAGE_BUFFER),
+        ];
+        let binding_infos: Vec<vk::DescriptorSetLayoutBinding> = bindings_def.iter()
+            .map(|&(binding, ty)| vk::DescriptorSetLayoutBinding::default()
+                .binding(binding).descriptor_type(ty).descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT))
+            .collect();
+        let layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&binding_infos);
+        // SAFETY: valid device/create info.
+        let set_layout = unsafe { dev.create_descriptor_set_layout(&layout_info, None) }?;
+        let pool_sizes: Vec<vk::DescriptorPoolSize> = bindings_def.iter()
+            .map(|&(_, ty)| vk::DescriptorPoolSize::default().ty(ty).descriptor_count(1)).collect();
+        let pool_info = vk::DescriptorPoolCreateInfo::default().max_sets(1).pool_sizes(&pool_sizes);
+        // SAFETY: valid device/create info.
+        let pool = unsafe { dev.create_descriptor_pool(&pool_info, None) }?;
+        let layouts = [set_layout];
+        let alloc = vk::DescriptorSetAllocateInfo::default().descriptor_pool(pool).set_layouts(&layouts);
+        // SAFETY: valid pool/layout.
+        let set = unsafe { dev.allocate_descriptor_sets(&alloc) }?[0];
+
+        // The sampled texture (RGBA8 UNORM) + nearest sampler.
+        let fmt = vk::Format::R8G8B8A8_UNORM;
+        let (image, image_memory, view) = ctx.make_image(fmt, w, h,
+            vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST)?;
+        let sci = vk::SamplerCreateInfo::default()
+            .mag_filter(vk::Filter::NEAREST).min_filter(vk::Filter::NEAREST)
+            .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+            .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+            .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE);
+        // SAFETY: valid device/create info.
+        let sampler = unsafe { dev.create_sampler(&sci, None) }?;
+
+        // Heap: T# at +0, S# at +32 (the shader's s2:s3 = 0).
+        let heap = ctx.heap(HEAP_SIZE)?;
+        let tkey = tsharp_key(0x11111111);
+        let skey4 = [0x92u32, 0xc00000, 0x14500000, 0];
+        let mut skey = [0xFFFFFFFFu32; 8];
+        skey[..4].copy_from_slice(&skey4);
+        // SAFETY: heap mapped for HEAP_SIZE; offsets 0 and 32 within it.
+        unsafe {
+            std::ptr::copy_nonoverlapping(tkey.as_ptr() as *const u8, heap.ptr, 32);
+            std::ptr::copy_nonoverlapping(skey4.as_ptr() as *const u8, heap.ptr.add(32), 16);
+        }
+        let table = build_hash_table(&[(tkey, 0), (skey, 0)], 64)?;
+        let (table_buffer, table_memory, table_ptr) = ctx.make_buffer(table.len() * 4,
+            vk::BufferUsageFlags::STORAGE_BUFFER,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT)?;
+        // SAFETY: host-visible, table.len()*4 bytes.
+        unsafe { std::ptr::copy_nonoverlapping(table.as_ptr() as *const u8, table_ptr, table.len() * 4) };
+
+        // Bind image (0), sampler (1), hash table (2).
+        let image_info = vk::DescriptorImageInfo::default().image_view(view).image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+        let sampler_info = vk::DescriptorImageInfo::default().sampler(sampler);
+        let buffer_info = vk::DescriptorBufferInfo::default().buffer(table_buffer).offset(0).range((table.len() * 4) as u64);
+        let writes = [
+            vk::WriteDescriptorSet::default().dst_set(set).dst_binding(0).descriptor_type(vk::DescriptorType::SAMPLED_IMAGE).image_info(std::slice::from_ref(&image_info)),
+            vk::WriteDescriptorSet::default().dst_set(set).dst_binding(1).descriptor_type(vk::DescriptorType::SAMPLER).image_info(std::slice::from_ref(&sampler_info)),
+            vk::WriteDescriptorSet::default().dst_set(set).dst_binding(2).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(std::slice::from_ref(&buffer_info)),
+        ];
+        // SAFETY: valid set/infos live for the call.
+        unsafe { dev.update_descriptor_sets(&writes, &[]) };
+
+        Ok(TexturedQuad { ctx, set_layout, pool, set, heap, table_buffer, table_memory, image, image_memory, view, sampler, width: w, height: h })
+    }
+
+    /// Upload RGBA8 texels and transition the image to shader-read.
+    pub fn upload(&self, texels: &[u32]) -> Result<()> {
+        let dev = &self.ctx.device;
+        let bytes = texels.len() * 4;
+        let (stage, stage_mem, ptr) = self.ctx.make_buffer(bytes, vk::BufferUsageFlags::TRANSFER_SRC,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT)?;
+        // SAFETY: host-visible, bytes valid.
+        unsafe { std::ptr::copy_nonoverlapping(texels.as_ptr() as *const u8, ptr, bytes) };
+        let image = self.image;
+        let range = vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 };
+        self.ctx.one_shot(|cmd| {
+            let to_transfer = vk::ImageMemoryBarrier::default()
+                .old_layout(vk::ImageLayout::UNDEFINED).new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                .image(image).subresource_range(range)
+                .src_access_mask(vk::AccessFlags::empty()).dst_access_mask(vk::AccessFlags::TRANSFER_WRITE);
+            // SAFETY: valid command buffer/barrier.
+            unsafe { dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::TRANSFER, vk::DependencyFlags::empty(), &[], &[], std::slice::from_ref(&to_transfer)) };
+            let region = vk::BufferImageCopy::default()
+                .image_subresource(vk::ImageSubresourceLayers { aspect_mask: vk::ImageAspectFlags::COLOR, mip_level: 0, base_array_layer: 0, layer_count: 1 })
+                .image_extent(vk::Extent3D { width: self.width, height: self.height, depth: 1 });
+            // SAFETY: valid command buffer/buffer/image.
+            unsafe { dev.cmd_copy_buffer_to_image(cmd, stage, image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, std::slice::from_ref(&region)) };
+            let to_read = vk::ImageMemoryBarrier::default()
+                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL).new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image(image).subresource_range(range)
+                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE).dst_access_mask(vk::AccessFlags::SHADER_READ);
+            // SAFETY: valid command buffer/barrier.
+            unsafe { dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::FRAGMENT_SHADER, vk::DependencyFlags::empty(), &[], &[], std::slice::from_ref(&to_read)) };
+            Ok(())
+        })?;
+        // SAFETY: staging buffer/memory owned here.
+        unsafe { dev.destroy_buffer(stage, None); dev.free_memory(stage_mem, None) };
+        Ok(())
+    }
+
+    /// Push constants: s2:s3 = 0 (the descriptor table VA at heap+0).
+    pub fn push_constants(&self) -> [u32; 36] {
+        let mut pc = [0u32; 36];
+        pc[2] = 0; pc[3] = 0;
+        pc[32] = self.heap.address as u32;
+        pc[33] = (self.heap.address >> 32) as u32;
+        pc
+    }
+}
+
+impl Drop for TexturedQuad<'_> {
+    fn drop(&mut self) {
+        // SAFETY: valid handles owned here.
+        unsafe {
+            self.ctx.device.destroy_sampler(self.sampler, None);
+            self.ctx.device.destroy_image_view(self.view, None);
+            self.ctx.device.destroy_image(self.image, None);
+            self.ctx.device.free_memory(self.image_memory, None);
+            self.ctx.device.destroy_buffer(self.table_buffer, None);
+            self.ctx.device.free_memory(self.table_memory, None);
+            self.ctx.device.destroy_descriptor_pool(self.pool, None);
+            self.ctx.device.destroy_descriptor_set_layout(self.set_layout, None);
+        }
     }
 }
 
