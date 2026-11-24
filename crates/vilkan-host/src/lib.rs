@@ -1,9 +1,12 @@
 //! The backend-neutral host interface.
 //!
 //! The runtime drives a [`HostBackend`] to execute one captured draw and read
-//! back its pixels. The input is the backend-neutral capture written by the
-//! D3D12 runtime's draw capture (`draw.json` + SPIR-V + view buffers); nothing
-//! here names D3D12 or Vulkan. Two paths sit behind the trait:
+//! back its pixels. The seam is **record-driven**: the trait takes the neutral
+//! [`DrawRecord`] and its in-memory [`DrawResources`] (SPIR-V, view-buffer bytes
+//! and the D3D12 readback), not a directory. [`load_capture`] and
+//! [`HostBackend::replay_dir`] are the convenience wrappers that read a capture
+//! folder first. Nothing here names D3D12 or Vulkan. Two paths sit behind the
+//! trait:
 //!
 //! * **D3D12** ([`D3D12Oracle`]): the existing Proton/D3D12 path, unchanged. It
 //!   serves the render-target readback that path already captured for the draw
@@ -62,6 +65,48 @@ impl DrawRecord {
     }
 }
 
+/// The in-memory resources one draw needs, backend-neutral: translated SPIR-V
+/// shaders, the root-view buffer contents keyed by console address, and (for the
+/// D3D12 reference) the captured render-target readback. This is what the seam
+/// takes as input — not a directory — so it can grow into the device/draw
+/// interface the live runtime drives (see `docs/host-backend.md`).
+#[derive(Debug, Clone, Default)]
+pub struct DrawResources {
+    /// Vertex shader, SPIR-V bytes (already translated, exact on wave32).
+    pub vs_spirv: Vec<u8>,
+    /// Pixel shader, SPIR-V bytes.
+    pub ps_spirv: Vec<u8>,
+    /// Root-view buffer contents, `(console address, bytes)`.
+    pub views: Vec<(u64, Vec<u8>)>,
+    /// The D3D12 render-target readback (RGBA8), if captured. The D3D12
+    /// reference serves this; the native path ignores it.
+    pub oracle_rgba8: Option<Vec<u8>>,
+}
+
+/// Load a capture directory into the neutral record and its resources. This is
+/// the convenience wrapper over the record-driven seam: `draw.json`, `vs.spv`,
+/// `ps.spv`, each `view_buffers[].data_file`, and `oracle.bin` if present.
+pub fn load_capture(dir: &Path) -> Result<(DrawRecord, DrawResources)> {
+    let record = DrawRecord::from_json(
+        &std::fs::read_to_string(dir.join("draw.json")).context("read draw.json")?,
+    )?;
+    let mut res = DrawResources {
+        vs_spirv: std::fs::read(dir.join("vs.spv")).context("read vs.spv")?,
+        ps_spirv: std::fs::read(dir.join("ps.spv")).context("read ps.spv")?,
+        ..Default::default()
+    };
+    for vb in &record.view_buffers {
+        let data = std::fs::read(dir.join(&vb.data_file))
+            .with_context(|| format!("read view buffer {}", vb.data_file))?;
+        res.views.push((vb.address, data));
+    }
+    // The oracle is optional: the native path does not need it.
+    if let Ok(oracle) = std::fs::read(dir.join("oracle.bin")) {
+        res.oracle_rgba8 = Some(oracle);
+    }
+    Ok((record, res))
+}
+
 /// The replayed draw's pixels (RGBA float, row-major) and size.
 #[derive(Debug, Clone)]
 pub struct ReplayResult {
@@ -85,13 +130,24 @@ pub enum Fault {
 }
 
 /// The backend-neutral interface the runtime drives: execute one captured draw
-/// and read back its pixels. `dir` holds `draw.json`, `vs.spv`, `ps.spv`, the
-/// view-buffer files and (for the D3D12 path) `oracle.bin`.
+/// and read back its pixels. The seam is **record-driven**: it takes the neutral
+/// [`DrawRecord`] and its in-memory [`DrawResources`], not a directory, so it can
+/// grow into the device/draw interface the live runtime drives. [`replay_dir`]
+/// is the convenience wrapper that loads a capture folder first.
+///
+/// [`replay_dir`]: HostBackend::replay_dir
 pub trait HostBackend {
     /// A short, stable name for logs and reports.
     fn name(&self) -> &'static str;
-    /// Replay the captured draw in `dir`, optionally injecting `fault`.
-    fn replay(&self, dir: &Path, fault: Fault) -> Result<ReplayResult>;
+    /// Execute one captured draw from its record and resources, optionally
+    /// injecting `fault`.
+    fn replay(&self, record: &DrawRecord, res: &DrawResources, fault: Fault) -> Result<ReplayResult>;
+    /// Convenience: load the record and resources from a capture directory, then
+    /// replay. The default impl reads the folder via [`load_capture`].
+    fn replay_dir(&self, dir: &Path, fault: Fault) -> Result<ReplayResult> {
+        let (record, res) = load_capture(dir)?;
+        self.replay(&record, &res, fault)
+    }
 }
 
 /// The D3D12 path behind the trait: the existing Proton/D3D12 execution,
@@ -106,13 +162,10 @@ impl HostBackend for D3D12Oracle {
         "d3d12"
     }
 
-    fn replay(&self, dir: &Path, _fault: Fault) -> Result<ReplayResult> {
-        let rec = DrawRecord::from_json(
-            &std::fs::read_to_string(dir.join("draw.json")).context("read draw.json")?,
-        )?;
-        let target = rec.targets.first().context("no render target")?;
-        let oracle = std::fs::read(dir.join("oracle.bin"))
-            .context("read oracle.bin (the D3D12 render-target readback)")?;
+    fn replay(&self, record: &DrawRecord, res: &DrawResources, _fault: Fault) -> Result<ReplayResult> {
+        let target = record.targets.first().context("no render target")?;
+        let oracle = res.oracle_rgba8.as_ref()
+            .context("no D3D12 render-target readback (oracle) in resources")?;
         let want = (target.width as usize) * (target.height as usize) * 4;
         if oracle.len() != want {
             bail!(
@@ -191,17 +244,42 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("vilkan-host-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("draw.json"), record_json()).unwrap();
+        std::fs::write(dir.join("vs.spv"), [0u8; 4]).unwrap();
+        std::fs::write(dir.join("ps.spv"), [0u8; 4]).unwrap();
+        std::fs::write(dir.join("view.bin"), [0u8; 8]).unwrap();
         // 2x2 RGBA8: a known pattern.
         let bytes: Vec<u8> = (0..16).map(|i| (i * 17) as u8).collect();
         std::fs::write(dir.join("oracle.bin"), &bytes).unwrap();
-        let out = D3D12Oracle.replay(&dir, Fault::None).unwrap();
+        let out = D3D12Oracle.replay_dir(&dir, Fault::None).unwrap();
         assert_eq!((out.width, out.height), (2, 2));
         assert_eq!(out.pixels.len(), 16);
         assert!((out.pixels[0] - 0.0).abs() < 1e-6);
         assert!((out.pixels[15] - 1.0).abs() < 1e-6);
         // The reference is fault-free: a fault does not change it.
-        let faulty = D3D12Oracle.replay(&dir, Fault::SkipDraw).unwrap();
+        let faulty = D3D12Oracle.replay_dir(&dir, Fault::SkipDraw).unwrap();
         assert_eq!(out.pixels, faulty.pixels);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn record_driven_seam_matches_dir_wrapper() {
+        // The trait takes the record + resources directly; replay_dir is just a
+        // loader over the same call. Both must agree.
+        let dir = std::env::temp_dir().join(format!("vilkan-host-seam-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("draw.json"), record_json()).unwrap();
+        std::fs::write(dir.join("vs.spv"), [0u8; 4]).unwrap();
+        std::fs::write(dir.join("ps.spv"), [0u8; 4]).unwrap();
+        std::fs::write(dir.join("view.bin"), [7u8; 8]).unwrap();
+        let bytes: Vec<u8> = (0..16).map(|i| (i * 17) as u8).collect();
+        std::fs::write(dir.join("oracle.bin"), &bytes).unwrap();
+        let (record, res) = load_capture(&dir).unwrap();
+        assert_eq!(res.views.len(), 1);
+        assert_eq!(res.views[0].0, 432078720);
+        assert_eq!(res.vs_spirv.len(), 4);
+        let direct = D3D12Oracle.replay(&record, &res, Fault::None).unwrap();
+        let wrapped = D3D12Oracle.replay_dir(&dir, Fault::None).unwrap();
+        assert_eq!(direct.pixels, wrapped.pixels);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -210,8 +288,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("vilkan-host-bad-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("draw.json"), record_json()).unwrap();
+        std::fs::write(dir.join("vs.spv"), [0u8; 4]).unwrap();
+        std::fs::write(dir.join("ps.spv"), [0u8; 4]).unwrap();
+        std::fs::write(dir.join("view.bin"), [0u8; 8]).unwrap();
         std::fs::write(dir.join("oracle.bin"), [0u8; 8]).unwrap(); // want 16
-        assert!(D3D12Oracle.replay(&dir, Fault::None).is_err());
+        assert!(D3D12Oracle.replay_dir(&dir, Fault::None).is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
 }
