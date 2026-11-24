@@ -193,7 +193,18 @@ pub(crate) fn bound(this: This) {
     let frame = crate::frame::current();
     for shader in &p.shaders {
         tracing::info!(pipeline = ?this, frame, stage = shader.stage, size = shader.container.len(), hash = %shader.hash, "first bind");
+        if shader.stage == "mesh" {
+            MESH_START.get_or_init(std::time::Instant::now);
+        }
     }
+}
+
+/// The instant of the first mesh-shader bind (world entry), for event-relative
+/// input scripting. `None` until a mesh pipeline binds.
+static MESH_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+pub fn mesh_start() -> Option<std::time::Instant> {
+    MESH_START.get().copied()
 }
 
 /// The host pipeline of a title pipeline, made on first use; `None` if one

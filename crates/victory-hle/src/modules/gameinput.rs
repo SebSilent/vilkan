@@ -1191,15 +1191,23 @@ mod host {
     /// sustains a direction for character movement.
     #[cfg(feature = "diagnostics")]
     fn scripted() -> Vec<u8> {
-        static SCRIPT: LazyLock<(Instant, Vec<(Duration, u8, Duration)>)> = LazyLock::new(|| {
+        // A script entry fires at an absolute time from input start, or
+        // event-relative: `mesh+<offset>` fires <offset> seconds after the
+        // first mesh bind (world entry), whose frame varies run to run.
+        enum At { Abs(Duration), MeshAfter(Duration) }
+        static SCRIPT: LazyLock<(Instant, Vec<(At, u8, Duration)>)> = LazyLock::new(|| {
             let list = std::env::var("VICTORY_KEYS").unwrap_or_default();
             let keys = list.split(',').filter_map(|entry| {
-                // <seconds>:<key>[:<hold_seconds>] — hold defaults to 0.2 s;
-                // a longer hold sustains a stick direction for movement.
+                // <at>:<key>[:<hold_seconds>]; <at> = seconds | mesh+seconds.
                 let mut parts = entry.split(':');
-                let at = parts.next()?;
+                let at = parts.next()?.trim();
                 let key = parts.next()?;
                 let hold = parts.next().unwrap_or("0.2");
+                let spec = if let Some(off) = at.strip_prefix("mesh+") {
+                    At::MeshAfter(Duration::try_from_secs_f64(off.trim().parse().ok()?).ok()?)
+                } else {
+                    At::Abs(Duration::try_from_secs_f64(at.parse().ok()?).ok()?)
+                };
                 let vk = match key.trim() {
                     "Enter" => 0x0D,
                     "Esc" => 0x1B,
@@ -1214,19 +1222,32 @@ mod host {
                     }
                     _ => return None,
                 };
-                Some((
-                    Duration::try_from_secs_f64(at.trim().parse().ok()?).ok()?,
-                    vk,
-                    Duration::try_from_secs_f64(hold.trim().parse().ok()?).ok()?,
-                ))
+                Some((spec, vk, Duration::try_from_secs_f64(hold.trim().parse().ok()?).ok()?))
             });
             (Instant::now(), keys.collect())
         });
         let (start, keys) = &*SCRIPT;
         let now = start.elapsed();
+        let mesh = victory_gpu::pipeline::mesh_start().map(|m| m.saturating_duration_since(*start));
         keys.iter()
-            .filter(|&&(at, _, hold)| (at..at + hold).contains(&now))
-            .map(|&(_, vk, _)| vk)
+            .filter(|(at, _, hold)| {
+                let fire = match at {
+                    At::Abs(d) => *d,
+                    At::MeshAfter(off) => match mesh {
+                        Some(m) => m + *off,
+                        None => return false,
+                    },
+                };
+                let active = (fire..fire + *hold).contains(&now);
+                if active && matches!(at, At::MeshAfter(_)) {
+                    static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                    if !LOGGED.swap(true, Ordering::Relaxed) {
+                        tracing::info!(key_hold = ?hold, since_mesh = ?now.checked_sub(fire), "event-relative input hold fired (after first mesh bind)");
+                    }
+                }
+                active
+            })
+            .map(|(_, vk, _)| *vk)
             .collect()
     }
 
