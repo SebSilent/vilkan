@@ -29,6 +29,23 @@ import sys
 from pathlib import Path
 
 
+def strip_vnop_prologue(code):
+    """The console compiler pads the code start with VOP3 v_nop instructions
+    (12 bytes each: an 8-byte VOP3 plus an ignored literal). llvm-mc misdecodes
+    these, and shader_disasm's scan fallback then skips real code (its minimum
+    start is 0x100). Strip the leading v_nops so the functional code disassembles
+    from its true start. v_nop is VOP3 (word & 0xFC000000 == 0xD4000000) with
+    opcode 0x180 ((word >> 16) & 0x3FF)."""
+    off = 0
+    while off + 4 <= len(code):
+        w = int.from_bytes(code[off:off + 4], "little")
+        if (w & 0xFC000000) == 0xD4000000 and ((w >> 16) & 0x3FF) == 0x180:
+            off += 12
+        else:
+            break
+    return code[off:], off
+
+
 def compute_header(group, rsrc2, wave64):
     # the reference compute_fixture.compute_header layout: 0x148 bytes, rsrc2 + group
     # at 0x138. The FSSM magic makes fssm_header.wave_size() read the wave flag
@@ -118,11 +135,28 @@ def main():
     for d in (disasm, fssm, spirv, cache):
         d.mkdir(parents=True, exist_ok=True)
 
+    # Strip the v_nop padding the console compiler puts at the code start;
+    # llvm-mc misdecodes it. Then place the code at a known offset and point the
+    # FSSM code-range field (u32 at 0xC0, instructions start 0x28 into the
+    # section) at it, so shader_disasm uses the header range instead of its scan
+    # fallback (whose minimum start is 0x100 and would skip real code).
+    raw = Path(a.blob).read_bytes()
+    code, stripped = strip_vnop_prologue(raw)
+    if stripped:
+        print(f"stripped {stripped} bytes of v_nop prologue")
+    code_off = 0x100
+    framed = bytearray(code_off + len(code))
+    struct.pack_into("<I", framed, 0xC0, code_off - 0x28)
+    framed[code_off:] = code
+    blob = work / f"{stem}.blob"
+    blob.parent.mkdir(parents=True, exist_ok=True)
+    blob.write_bytes(framed)
+
     # Content-addressed cache key: the code AND the FSSM header metadata that
     # affects translation (rsrc2, group, wave flag) AND the emulation marker.
     # A code-only key would miss an rsrc2 correction; this does not.
     key_src = json.dumps(
-        {"code_sha256": hashlib.sha256(Path(a.blob).read_bytes()).hexdigest(),
+        {"code_sha256": hashlib.sha256(code).hexdigest(),
          "rsrc2": meta["rsrc2"], "group": meta["group"], "wave64": meta["wave64"],
          "mode": "wave64-emulate"},
         sort_keys=True).encode()
@@ -136,9 +170,10 @@ def main():
         (spirv / "index.json").write_text(cached_index.read_text())
         print(f"cache hit {key}")
     else:
-        # 1. Disassemble the raw blob (shader_disasm falls back to the s_endpgm scan).
+        # 1. Disassemble the stripped blob (shader_disasm falls back to the
+        # s_endpgm scan; with the v_nop prologue gone the clean start is found).
         r = subprocess.run([sys.executable, "-I", str(tools / "shader_disasm.py"),
-                            a.blob, "--out", str(disasm)], capture_output=True, text=True)
+                            str(blob), "--out", str(disasm)], capture_output=True, text=True)
         sys.stderr.write(r.stdout + r.stderr)
         src = disasm / f"{stem}.s"
         if not src.exists():
