@@ -77,6 +77,10 @@
 *.7z
 *.rar
 
+# Python bytecode (the compiler sidecar is .py)
+__pycache__/
+*.pyc
+
 # Editor / OS noise
 .vs/
 .idea/
