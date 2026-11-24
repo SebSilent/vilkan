@@ -26,6 +26,14 @@ pub fn run(
         Some(build) => println!("build          {} ({hash})", build.label),
         None => println!("build          unknown ({hash})"),
     }
+    // Self-identify the active backend in every run log (and the window
+    // title, labelled in lifecycle::CreateWindowEx*). Default DX12.
+    let backend = match std::env::var("VILKAN_BACKEND").as_deref() {
+        Ok("vulkan") => "Vulkan",
+        _ => "DX12",
+    };
+    println!("backend        {backend}");
+    tracing::info!(backend, "active backend");
 
     let images = cfg.cache_subdir("images")?;
     victory_hle::modules::d3d12x::use_shader_cache(cfg.cache_subdir("shaders")?);

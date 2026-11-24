@@ -1086,12 +1086,16 @@ impl State {
         const MESH: u32 = 10;
         let len = u64::from(stride) * u64::from(max.max(1));
         let Some(args) = crate::shadow::find(arguments, len) else {
+            tracing::warn!(arguments = format_args!("{arguments:#x}"), len, kind, "indirect drop: argument buffer not shadowed");
             return false;
         };
         let counter = match count {
             Some(at) => match crate::shadow::find(at, 4) {
                 Some(s) => Some((s, at)),
-                None => return false,
+                None => {
+                    tracing::warn!(at = format_args!("{at:#x}"), "indirect drop: count buffer not shadowed");
+                    return false;
+                }
             },
             None => None,
         };
@@ -1099,6 +1103,7 @@ impl State {
             .then(|| host_signature(kind, stride))
             .flatten()
         else {
+            tracing::warn!(kind, stride, "indirect drop: no host signature");
             return false;
         };
         args.refresh(list, arguments, len);
@@ -1107,6 +1112,7 @@ impl State {
         }
         // Bounded first: the clamp binds a compute pipeline of its own.
         if !crate::indirect::bound(list, &args.buffer, args.gpu(arguments), (kind, stride, max)) {
+            tracing::warn!(kind, "indirect drop: clamp bound failed");
             return false;
         }
         self.host_pipeline = 0;
@@ -1119,7 +1125,10 @@ impl State {
                     self.bind(list, p, true);
                     true
                 }
-                _ => false,
+                _ => {
+                    tracing::warn!(pipeline = format_args!("{:#x}", self.pipeline), "indirect drop: dispatch without a compute pipeline");
+                    false
+                }
             },
             _ => false,
         };

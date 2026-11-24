@@ -59,6 +59,42 @@ pub extern "system" fn UnregisterAppStateChangeNotification(registration: usize)
 /// The window procedure a title window had before ours.
 const TITLE_PROC: PCWSTR = w!("victory.wndproc");
 
+/// The visible backend suffix for the runner window (" (DX12)" / " (Vulkan)"),
+/// matching the startup log. The title's own exe and files are untouched —
+/// this only labels the window we host. Default DX12 (VILKAN_BACKEND).
+fn backend_suffix() -> &'static str {
+    match std::env::var("VILKAN_BACKEND").as_deref() {
+        Ok("vulkan") => " (Vulkan)",
+        _ => " (DX12)",
+    }
+}
+
+/// The title's wide window name with the backend suffix appended.
+fn backend_window_name_w(name: PCWSTR) -> Vec<u16> {
+    // SAFETY: the title passes a NUL-terminated wide name (or null).
+    let mut buf: Vec<u16> = if name.is_null() {
+        Vec::new()
+    } else {
+        unsafe { (0..).take_while(|&i| *name.0.add(i) != 0).map(|i| *name.0.add(i)).collect() }
+    };
+    buf.extend(backend_suffix().encode_utf16());
+    buf.push(0);
+    buf
+}
+
+/// The title's narrow window name with the backend suffix appended.
+fn backend_window_name_a(name: PCSTR) -> Vec<u8> {
+    // SAFETY: the title passes a NUL-terminated narrow name (or null).
+    let mut buf: Vec<u8> = if name.is_null() {
+        Vec::new()
+    } else {
+        unsafe { (0..).take_while(|&i| *name.0.add(i) != 0).map(|i| *name.0.add(i)).collect() }
+    };
+    buf.extend(backend_suffix().bytes());
+    buf.push(0);
+    buf
+}
+
 pub extern "system" fn CreateWindowExW(
     ex_style: u32,
     class: PCWSTR,
@@ -74,7 +110,10 @@ pub extern "system" fn CreateWindowExW(
     param: *const c_void,
 ) -> HWND {
     let (x, y, width, height) = fit(parent, x, y, width, height);
-    // SAFETY: the title's own arguments, forwarded (the size fitted).
+    let name_buf = backend_window_name_w(name);
+    let name = PCWSTR(name_buf.as_ptr());
+    // SAFETY: the title's own arguments, forwarded (the size fitted, the
+    // name labelled); name_buf lives through the call.
     let hwnd = unsafe {
         wm::CreateWindowExW(
             ex_style, class, name, style, x, y, width, height, parent, menu, instance, param,
@@ -100,7 +139,10 @@ pub extern "system" fn CreateWindowExA(
     param: *const c_void,
 ) -> HWND {
     let (x, y, width, height) = fit(parent, x, y, width, height);
-    // SAFETY: the title's own arguments, forwarded (the size fitted).
+    let name_buf = backend_window_name_a(name);
+    let name = PCSTR(name_buf.as_ptr());
+    // SAFETY: the title's own arguments, forwarded (the size fitted, the
+    // name labelled); name_buf lives through the call.
     let hwnd = unsafe {
         wm::CreateWindowExA(
             ex_style, class, name, style, x, y, width, height, parent, menu, instance, param,

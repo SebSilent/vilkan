@@ -308,6 +308,14 @@ impl BackendKind {
             Self::Vulkan => "vulkan",
         }
     }
+
+    /// The visible backend label for the runner window and startup log.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::D3D12 => "DX12",
+            Self::Vulkan => "Vulkan",
+        }
+    }
 }
 
 #[cfg(test)]
