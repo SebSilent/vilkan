@@ -599,7 +599,7 @@ impl Instruction {
     }
 }
 
-/// VOP3-only opcodes that take two sources (the rest take three).
+/// VOP3-only opcodes that have two sources (the rest have three).
 const VOP3_TWO_SOURCES: &[&str] = &[
     "v_add_f64",
     "v_mul_f64",
