@@ -59,9 +59,28 @@ What is ours (branded VIlkan)
   * our environment variables: VILKAN_DATA, VILKAN_GAME_DIR, VILKAN_TITLE_EXE,
     VILKAN_SHADER_FIXTURES, VILKAN_BCPACK_TABLES, VILKAN_VK_FIXTURES, VILKAN_LOG
 
-The native Vulkan path consumes SPIR-V compiled offline by a clean-room RDNA2
-translator sidecar (see LOCAL-NOTES.md, untracked, for provenance and license
-position). We do not port that translator or write our own IR→SPIR-V emitter.
+Vendored: RDNA2 → SPIR-V translator (third_party/rdna2spirv)
+-----------------------------------------------------------
+The native Vulkan path consumes SPIR-V compiled by a clean-room RDNA2 → SPIR-V
+translator, vendored under `third_party/rdna2spirv/` so the native path works
+from a clean clone with no external dependency. We invoke it as a compiler; we
+do not port it to Rust or write our own IR→SPIR-V emitter.
+
+It is **GPL-3.0** software (its license is `third_party/rdna2spirv/LICENSE`);
+VIlkan is GPL-3.0-or-later, so the combination is GPL-compatible. Vendored
+components: the translator (`rdna2spirv.py`), the disassembler (`shader_disasm.py`,
+`rdna2_decode.py`), the shader IR (`shader_ir.py`), the wave64 emulation modules
+(`wave64_emulate_opt.py`, `wave64_halves.py`, `lane_masks.py`, `cfg_structure.py`),
+the host subgroup probe (`vk_subgroup_info.py`), the fixture build harness
+(`runtime/test/shaders/build.py`, `compute_fixture.py`) and their module
+dependencies. The synthetic cross-half fixtures (`cs_w64x_*.asm`) are clean-room
+test code. `tools/gfx10_formats.json` is the public GFX10 format enum from Mesa
+(`src/amd/registers/gfx10-rsrc.json`), a hardware format table, not game data.
+
+Every vendored file was audited before import: clean-room code only; anything
+game-derived, fitted or calibrated was rejected (the BCPack BC6H/BC7 history
+dictionaries are the precedent — those stay outside the tree). The game-name
+scrub was run over the vendored files; no title-identifying string is tracked.
 
 Game-name scrub and asset policy
 --------------------------------

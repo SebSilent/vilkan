@@ -45,9 +45,10 @@ Two backends, one loader/HLE:
 
 - **The title** — your own dump of Cuck Simulator Miami (Xbox Series X|S).
   Point `VILKAN_GAME_DIR` (or `GAME_DIR`) at its folder.
-- **The external translator** — a clean-room RDNA2 → SPIR-V translator
-  (GPL-3.0) for the native path, invoked as a sidecar. Set `TRANSLATOR_DIR`.
-  We do not redistribute it; see [NOTICE](NOTICE) and `LOCAL-NOTES.md`.
+- **The translator is vendored** — a clean-room RDNA2 → SPIR-V translator
+  (GPL-3.0) lives in `third_party/rdna2spirv/`, so the native path works from a
+  clean clone with no external dependency. `scripts/compile-native.py` uses it
+  by default; `TRANSLATOR_DIR` overrides it. See [NOTICE](NOTICE) for the license.
 - **Fixture paths** for the data-dependent tests: `VILKAN_VK_FIXTURES` (SPIR-V),
   `VILKAN_SHADER_FIXTURES` (captured containers), `VILKAN_BCPACK_TABLES`
   (BCPack tables). **Every step that needs these skips cleanly when they are
@@ -58,7 +59,8 @@ Two backends, one loader/HLE:
 Requirements: Rust (pinned in `rust-toolchain.toml`), a CPU with AVX2. For the
 Proton path: Steam with a Proton runtime, and a Vulkan GPU. For the native path:
 a Vulkan 1.3 driver, `llvm-mc` (AMDGPU target) and `spirv-tools`
-(`spirv-as`/`spirv-val`), and the external translator.
+(`spirv-as`/`spirv-val`). The RDNA2 translator is vendored (`third_party/rdna2spirv`),
+so no external translator is needed.
 
 ```bash
 # 1. Build and test the platform code. Needs NO game data and NO translator.
@@ -85,17 +87,17 @@ bridges our `VILKAN_*` vars to the upstream `VICTORY_*` config the binary reads.
 Without a title it exits with a clear message; nothing is bundled.
 
 ```bash
-# 3. Native Vulkan compute (needs a Vulkan driver + the translator + fixtures).
+# 3. Native Vulkan compute (needs a Vulkan driver + fixtures; translator vendored).
 cargo build -p vilkan-vk
-# Compile a captured shader to SPIR-V with the external translator:
-TRANSLATOR_DIR=/path/to/translator python3 scripts/compile-native.py <blob> <out>
+# Compile a captured shader to SPIR-V with the vendored translator (default):
+python3 scripts/compile-native.py <blob> <out>      # TRANSLATOR_DIR overrides
 # Run the numeric dispatch tests against compiled fixtures:
 VILKAN_VK_FIXTURES=/path/to/spirv cargo test -p vilkan-vk
 ```
 
-Without `TRANSLATOR_DIR` the compile step exits with a clear message; without
-`VILKAN_VK_FIXTURES` the dispatch tests skip. The platform suite (step 1) always
-passes regardless.
+The compile step uses the vendored translator by default (`TRANSLATOR_DIR`
+overrides). Without `VILKAN_VK_FIXTURES` the dispatch tests skip. The platform
+suite (step 1) always passes regardless.
 
 ## Commands
 

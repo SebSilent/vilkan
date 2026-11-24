@@ -108,13 +108,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("blob")
     ap.add_argument("out")
-    ap.add_argument("--translator", default=os.environ.get("TRANSLATOR_DIR"),
-                    help="the clean-room RDNA2 translator checkout (or TRANSLATOR_DIR)")
+    # Default: the vendored translator in third_party/rdna2spirv (works from a
+    # clean clone). TRANSLATOR_DIR / --translator overrides it.
+    vendored = Path(__file__).resolve().parent.parent / "third_party" / "rdna2spirv"
+    ap.add_argument("--translator", default=os.environ.get("TRANSLATOR_DIR") or str(vendored),
+                    help="RDNA2 translator dir (default: vendored third_party/rdna2spirv; TRANSLATOR_DIR overrides)")
     a = ap.parse_args()
-    if not a.translator:
-        sys.exit("set --translator or TRANSLATOR_DIR to the RDNA2 translator checkout")
     translator = Path(a.translator).resolve()
     tools = translator / "tools"
+    if not (tools / "rdna2spirv.py").exists():
+        sys.exit(f"no translator at {translator} (missing tools/rdna2spirv.py)")
     out = Path(a.out).resolve()
     stem = Path(a.blob).stem
     name = f"cs_{stem}"
