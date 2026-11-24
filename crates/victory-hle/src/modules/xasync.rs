@@ -616,8 +616,30 @@ pub fn XAsyncGetStatus(block: *mut AsyncBlock, wait: bool) -> HRESULT {
         return E_INVALIDARG;
     }
     if wait && let Some(call) = call(block) {
-        let done = lock(&call.done);
-        drop(call.finished.wait_while(done, |d| !*d));
+        let mut done = lock(&call.done);
+        // A wait past ~1 s names the culprit: the loading-screen render
+        // thread waits on Subrender workers whose async block never
+        // completes. Log the identity/provider once so the first post-ban
+        // run names which async API stalls (logs only, no interceptor).
+        let start = std::time::Instant::now();
+        let mut logged = false;
+        while !*done {
+            let (guard, _) = call
+                .finished
+                .wait_timeout_while(done, std::time::Duration::from_secs(1), |d| !*d)
+                .unwrap_or_else(|e| e.into_inner());
+            done = guard;
+            if !*done && !logged {
+                tracing::warn!(
+                    block = format_args!("{block:p}"),
+                    identity = format_args!("{:#x}", call.identity),
+                    provider = format_args!("{:p}", call.provider),
+                    waited_ms = start.elapsed().as_millis() as u64,
+                    "XAsync wait exceeded 1s: block still pending"
+                );
+                logged = true;
+            }
+        }
     }
     status(block)
 }
