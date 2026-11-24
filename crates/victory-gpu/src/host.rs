@@ -67,6 +67,22 @@ unsafe impl Sync for Host {}
 static SUBMISSION_US: [std::sync::atomic::AtomicU64; 2] =
     [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
 
+/// The present path (microseconds): the whole `Host::present` call, and the
+/// `swap_chain.Present` flip within it. These were unmeasured spans of the
+/// frame wall-time (a 13.7 s frame showed only ~5 ms of prep/GPU work); the
+/// flip can wait on the window thread / frame latency. Since the last
+/// frame-rate line.
+static PRESENT_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static FLIP_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Records the whole present call's duration on drop (every return path).
+struct PresentTimer(std::time::Instant);
+impl Drop for PresentTimer {
+    fn drop(&mut self) {
+        PRESENT_US.fetch_add(self.0.elapsed().as_micros() as u64, Ordering::Relaxed);
+    }
+}
+
 /// After submissions: shader-written ranges compared and copied back into
 /// title memory (microseconds, bytes that differed), since the last
 /// frame-rate line.
@@ -1310,6 +1326,8 @@ impl Meter {
         let [back_ms, back_mb] = [0, 1].map(|i| {
             COPY_BACK[i].swap(0, Ordering::Relaxed) as f64 / [1e3, 1e6][i] / frames
         });
+        let present_ms = PRESENT_US.swap(0, Ordering::Relaxed) as f64 / 1e3 / frames;
+        let flip_ms = FLIP_US.swap(0, Ordering::Relaxed) as f64 / 1e3 / frames;
         let dropped = crate::draw::take_dropped() as f64 / frames;
         let indirect = crate::list::take_indirect() as f64 / frames;
         if self.logged.elapsed() >= std::time::Duration::from_secs(5) {
@@ -1317,7 +1335,8 @@ impl Meter {
             tracing::info!(
                 "{fps:.1} fps, {ms:.1} ms/frame ({cpu:.1} preparing: copies {copy_ms:.1} ms \
                  {copy_mb:.1} MB, textures {texture_ms:.1} ms {texture_mb:.1} MB; {gpu:.1} on the \
-                 GPU; {back_ms:.1} copying back {back_mb:.1} MB), {draws:.0} draws/frame, \
+                 GPU; {back_ms:.1} copying back {back_mb:.1} MB; present {present_ms:.1} ms, \
+                 flip {flip_ms:.1} ms), {draws:.0} draws/frame, \
                  dropped {dropped:.0} without a host pipeline and {indirect:.0} indirect"
             );
             #[cfg(feature = "diagnostics")]
@@ -1365,6 +1384,7 @@ impl Host {
     /// as frame `frame` (saved if captures are on). `None` if nothing was
     /// shown; else, in diagnostics builds, whether the frame was black.
     pub(crate) fn present(&self, texture: &ID3D12Resource, state: u32, frame: u64) -> Option<bool> {
+        let _present_timer = PresentTimer(std::time::Instant::now());
         // SAFETY: a live resource.
         let desc = unsafe { texture.GetDesc() };
         let Some(format) = swap_format(desc.Format) else {
@@ -1437,7 +1457,9 @@ impl Host {
             if let Some((buffer, footprint)) = capture {
                 crate::capture::save_read_back(frame, &buffer, &footprint);
             }
+            let flip_started = std::time::Instant::now();
             let _ = p.swap_chain.Present(0, DXGI_PRESENT(0));
+            FLIP_US.fetch_add(flip_started.elapsed().as_micros() as u64, Ordering::Relaxed);
             p.meter.frame(p.hwnd);
             #[cfg(feature = "diagnostics")]
             return Some(probe.is_some_and(|b| crate::capture::black(&b)));
