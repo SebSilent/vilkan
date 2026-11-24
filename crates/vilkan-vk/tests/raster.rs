@@ -108,6 +108,42 @@ fn real_pair_output_zeroes_covers_screen() {
     eprintln!("real pair: {covered} pixels = PS output (0,0,0,0), differ from white clear ✓");
 }
 
+/// A real newly-translating pair that does something visible: vs_fstriangle
+/// (fullscreen triangle, param0 = UV) + ps_uv_clear (outputs the interpolated
+/// attr0.xy as colour). The covered pixels must be the known UV gradient
+/// (red = u, green = 1 - v — the shader's param0.y runs top-to-bottom — and
+/// blue = alpha = 0), not a constant and not the clear.
+#[test]
+fn real_pair_uv_gradient_is_visible() {
+    let Some(vs) = fixture("vs_fstriangle.spv") else { return };
+    let Some(ps) = fixture("ps_uv_real.spv") else { return };
+    let Some(ctx) = context() else { return };
+    let Some(rt) = RenderTarget::new(&ctx, 64, 64).ok() else { return };
+    let clear = [0.5f32, 0.5, 0.5, 1.0];
+    let Some(px) = rt.draw_and_readback(&vs, &ps, clear).ok() else { return };
+    assert_eq!(px.len(), 64 * 64 * 4);
+    let mut max_err = 0.0f32;
+    let mut distinct = std::collections::HashSet::new();
+    for y in 0..64 {
+        for x in 0..64 {
+            let p = (y * 64 + x) * 4;
+            let u = (x as f32 + 0.5) / 64.0;
+            let v = (y as f32 + 0.5) / 64.0;
+            let r = f32_at(&px, p);
+            let g = f32_at(&px, p + 1);
+            let b = f32_at(&px, p + 2);
+            let a = f32_at(&px, p + 3);
+            let err = (r - u).abs().max((g - (1.0 - v)).abs());
+            max_err = max_err.max(err);
+            assert!(err < 0.02, "pixel ({x},{y}): r={r} want {u}, g={g} want {v}");
+            assert!(b.abs() < 1e-6 && a.abs() < 1e-6, "pixel ({x},{y}): b={b} a={a} want 0");
+            distinct.insert((r.to_bits(), g.to_bits()));
+        }
+    }
+    assert!(distinct.len() > 100, "output must be a visible gradient, not constant ({} distinct)", distinct.len());
+    eprintln!("real UV gradient: 4096 pixels, max err {max_err:.2e}, {} distinct colours ✓", distinct.len());
+}
+
 /// ps_tex samples an 8x8 gradient texture (texel (i,j) = (i/8, j/8, 0.5, 1))
 /// through the crafted bindless set, at the UV vs_ids runs 0..1 over a 64x64
 /// target. With a nearest sampler, pixel (x,y) reads texel

@@ -42,7 +42,10 @@ def main():
         names = names[:a.limit]
     framed_count = 0
     for name in names:
-        meta = json.loads((blobs / f"{name}.json").read_text())
+        meta_path = blobs / f"{name}.blob.json"
+        if not meta_path.exists():
+            meta_path = blobs / f"{name}.json"
+        meta = json.loads(meta_path.read_text())
         raw = (blobs / f"{name}.blob").read_bytes()
         code, _ = cn.strip_vnop_prologue(raw)
         code_off = 0x148
@@ -52,7 +55,9 @@ def main():
         struct.pack_into("<I", framed, 0xC0, code_off - 0x28)
         framed[code_off:code_off + len(code)] = code
         (fssm / f"{name}.fssm").write_bytes(framed)
-        dxbc = blobs / f"{name}.dxbc"
+        dxbc = blobs / f"{name}.blob.dxbc"
+        if not dxbc.exists():
+            dxbc = blobs / f"{name}.dxbc"
         if dxbc.exists():
             shutil.copy(dxbc, work / f"{name}.dxbc")
         framed_count += 1
@@ -67,7 +72,7 @@ def main():
     # Translate all; capture the failure ranking the translator prints.
     r = subprocess.run([sys.executable, "-I", str(TOOLS / "rdna2spirv.py"),
                         str(disasm), "--out", str(spirv), "--fssm-dir", str(fssm),
-                        "--wave64-emulate"], capture_output=True, text=True)
+                        "--wave64-emulate", "--assembler", "python"], capture_output=True, text=True)
     out = r.stdout + r.stderr
     (work / "translate.log").write_text(out)
     # Print the coverage summary + failure ranking lines.

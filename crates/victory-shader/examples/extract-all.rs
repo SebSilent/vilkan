@@ -47,11 +47,11 @@ fn main() {
             let nroot = p.layout.len();
             let _ = (nused, nroot);
             std::fs::write(out.join(format!("{name}.blob")), &p.code).unwrap();
-            std::fs::write(out.join(format!("{name}.dxbc")), &data).unwrap();
+            std::fs::write(out.join(format!("{name}.blob.dxbc")), &data).unwrap();
             let json = format!(
                 "{{\"stage\":\"{stage}\",\"wave64\":{},\"vgprs\":{},\"rsrc2\":{rsrc2},\"group\":[{},{},{}],\"code_bytes\":{},\"root_params\":{nroot},\"used_resources\":{nused}}}\n",
                 p.wave64, p.vgprs, threads[0], threads[1], threads[2], p.code.len());
-            std::fs::write(out.join(format!("{name}.json")), json).unwrap();
+            std::fs::write(out.join(format!("{name}.blob.json")), json).unwrap();
             if stage == "vs" { n_vs += 1; } else { n_ps += 1; }
         }
     }
