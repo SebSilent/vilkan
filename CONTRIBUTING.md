@@ -25,7 +25,7 @@ passes the full suite.
 
 ### The CSM naming rule
 
-The supported title is referred to only as **Cuck Simulator Miami (CSM)**. The
+The supported title is referred to only as **Chores Simulator Miami (CSM)**. The
 real game name, publisher, release/scene tags, and any title-identifying string
 are kept out of the tree, commit messages, and documentation.
 

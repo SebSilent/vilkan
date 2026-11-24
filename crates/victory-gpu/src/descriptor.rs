@@ -34,7 +34,7 @@ pub(crate) struct HeapDesc {
     nodes: u32,
 }
 
-/// Newer titles (Cuck Simulator Miami) pass the description followed by
+/// Newer titles (Chores Simulator Miami) pass the description followed by
 /// memory of their own for the descriptors: an address and its size in
 /// bytes, or a null address to have the heap allocate (inferred from the
 /// title's call sites; older titles pass the plain description).
@@ -73,7 +73,7 @@ impl Heap {
     }
 
     /// The host heap, made on first use from what the title wrote so far.
-    /// Made late because a host view heap the size of Cuck Simulator Miami's
+    /// Made late because a host view heap the size of Chores Simulator Miami's
     /// costs over 100 MB of commit, which its boot needs for its page pool.
     #[cfg(windows)]
     pub(crate) fn host(&self) -> Option<&host::HostHeap> {
@@ -757,7 +757,7 @@ mod tests {
         assert_ne!(old, new, "a new generation");
     }
 
-    /// Cuck Simulator Miami places its shader-visible heap in its own memory
+    /// Chores Simulator Miami places its shader-visible heap in its own memory
     /// and checks that the heap starts there.
     #[test]
     fn placed_heaps_start_at_the_title_memory() {

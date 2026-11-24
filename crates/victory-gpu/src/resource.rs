@@ -178,7 +178,7 @@ fn footprint(desc: &ResourceDesc) -> Option<AllocationInfo> {
         && let Some(t) = texture_layout(desc)
     {
         // As the console: the layout's own alignment unless more is asked
-        // (4 KiB for 4 KiB modes, where PC says 64 KiB). Cuck Simulator Miami
+        // (4 KiB for 4 KiB modes, where PC says 64 KiB). Chores Simulator Miami
         // VI keeps these sizes in its texture tables, and its streaming
         // asserts when they disagree with the streamed layout.
         let alignment = desc.alignment.max(t.alignment);
@@ -569,7 +569,7 @@ static ALLOCATOR: std::sync::OnceLock<(AllocRoutine, FreeRoutine)> = std::sync::
 
 /// Committed resources get their memory from the title's general
 /// allocator, as on the console, where titles hook it to place graphics
-/// memory themselves (Cuck Simulator Miami places its back buffers in a
+/// memory themselves (Chores Simulator Miami places its back buffers in a
 /// block of its own and checks they fill it). The runtime names it before
 /// the device exists.
 pub fn use_allocator(alloc: AllocRoutine, free: FreeRoutine) {
@@ -814,7 +814,7 @@ fn host_texture(
     d.alignment = 0;
     d.flags &= PC_FLAGS;
     // PC refuses depth targets that are also unordered-access (the console
-    // allows both; Cuck Simulator Miami's shadow maps ask for it).
+    // allows both; Chores Simulator Miami's shadow maps ask for it).
     // shortcut: the host copy loses UAV use; give it a second view-only
     // copy if draws write it as a UAV.
     const DEPTH: u32 = 2;
@@ -1033,7 +1033,7 @@ pub(crate) extern "system" fn create_committed(
     )
 }
 
-/// Device method 0x3f8, inferred from Cuck Simulator Miami's calls
+/// Device method 0x3f8, inferred from Chores Simulator Miami's calls
 /// (a title offset: its back buffers, heap flag "allow display"): the
 /// committed resource creation of the enhanced-barrier interfaces,
 /// `(heap, heap flags, desc1, initial layout, clear value, protected
@@ -1096,7 +1096,7 @@ pub(crate) extern "system" fn unregister_page_pool(_: This, handle: usize) -> HR
 }
 
 /// Device method 0x428, one of the `ID3D12Device9` to `ID3D12Device11`
-/// additions. From Cuck Simulator Miami's call: a resource at a virtual
+/// additions. From Chores Simulator Miami's call: a resource at a virtual
 /// address the title mapped itself, `(address, desc1, initial barrier
 /// layout, clear value, iid, out)`, as `CreatePlacedResourceX` with
 /// enhanced barriers. GPU addresses are CPU addresses, so the resource is
@@ -1146,7 +1146,7 @@ pub(crate) extern "system" fn create_at_address(
 }
 
 /// Textures the title placed in its own memory and views without a
-/// resource object (device 0x230, Cuck Simulator Miami's streamed and
+/// resource object (device 0x230, Chores Simulator Miami's streamed and
 /// interface textures), by address and description: a resource at that
 /// address, made the first time a draw reads one.
 /// shortcut: never released (one host texture per distinct address and

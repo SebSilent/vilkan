@@ -186,7 +186,7 @@ fn title_dll(host: &victory_hle::HostPolicy, dll: &str) -> bool {
 }
 
 /// Title DLLs the title loads itself (`LoadLibrary`) that nothing imports,
-/// e.g. Cuck Simulator Miami's upscaler behind its FidelityFX loader.
+/// e.g. Chores Simulator Miami's upscaler behind its FidelityFX loader.
 #[cfg(windows)]
 struct LateDlls {
     host: victory_hle::HostPolicy,
