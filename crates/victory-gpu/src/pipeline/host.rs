@@ -113,7 +113,39 @@ impl Default for GraphicsState {
     }
 }
 
-impl GraphicsState {
+/// The mutable construction phase of a [`GraphicsState`]. `read` lives
+/// here, not on `GraphicsState`, so the shared type has no `&mut self`
+/// method: once `build()` produces a `GraphicsState` and it is wrapped in
+/// an `Arc`, the type system guarantees `inputs`/`names` (and the
+/// `SemanticName` pointers into `names`) can never be mutated again. That
+/// is what makes the `unsafe impl Send/Sync` on `GraphicsState` sound.
+pub(crate) struct GraphicsStateBuilder(GraphicsState);
+
+impl Default for GraphicsStateBuilder {
+    fn default() -> Self {
+        Self(GraphicsState::default())
+    }
+}
+
+impl std::ops::Deref for GraphicsStateBuilder {
+    type Target = GraphicsState;
+    fn deref(&self) -> &GraphicsState {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for GraphicsStateBuilder {
+    fn deref_mut(&mut self) -> &mut GraphicsState {
+        &mut self.0
+    }
+}
+
+impl GraphicsStateBuilder {
+    /// Finish construction; the result is immutable.
+    pub(crate) fn build(self) -> GraphicsState {
+        self.0
+    }
+
     /// Takes in one subobject of a stream: its type, then its data at +4
     /// (+8 for those holding pointers).
     ///
@@ -192,7 +224,9 @@ impl GraphicsState {
             }
         }
     }
+}
 
+impl GraphicsState {
     /// The vertex buffer slots the input layout reads.
     fn slots(&self) -> u32 {
         self.inputs

@@ -58,3 +58,11 @@ mod watch;
 pub use host::on_failure;
 #[cfg(windows)]
 pub use watch::{title_memory_remapped, writing as kernel_will_write};
+
+/// Drain the background pipeline-compilation pool on shutdown: every queued
+/// job runs (setting its slot, releasing any waiter) before the workers
+/// exit. No-op on non-Windows.
+pub fn shutdown_pool() {
+    #[cfg(windows)]
+    hostpool::shutdown();
+}

@@ -129,6 +129,8 @@ pub fn run(
         .join()
         .map_err(|_| anyhow::anyhow!("title main thread panicked"))??;
     println!("title exited with {code}");
+    // Drain the compilation pool so no queued job leaves a waiter hung.
+    victory_gpu::shutdown_pool();
     Ok(())
 }
 

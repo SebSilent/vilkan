@@ -183,34 +183,57 @@ pub(crate) struct HostSlot {
     done: std::sync::Condvar,
     /// Held only to pair with `done`; the value is unused.
     lock: std::sync::Mutex<()>,
+    /// Set when the pool could not take the job (queue full/closed): the
+    /// result is compiled inline at first use instead. Never blocks here.
+    abandoned: std::sync::atomic::AtomicBool,
 }
 
 #[cfg(windows)]
 impl HostSlot {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             result: OnceLock::new(),
             done: std::sync::Condvar::new(),
             lock: std::sync::Mutex::new(()),
+            abandoned: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
     /// Store the compilation result (success or refusal) and wake waiters.
-    fn complete(&self, h: Option<host::HostPipeline>) {
+    /// Called on EVERY pool exit path so a waiter is always released.
+    pub(crate) fn complete(&self, h: Option<host::HostPipeline>) {
         let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let _ = self.result.set(h);
         self.done.notify_all();
     }
 
+    /// Mark for inline compilation at first use (pool queue full/closed).
+    pub(crate) fn abandon(&self) {
+        self.abandoned
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether the pool declined the job (compile inline at first use).
+    pub(crate) fn is_abandoned(&self) -> bool {
+        self.abandoned
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Whether a result has been stored (success or refusal).
+    #[cfg(test)]
+    pub(crate) fn done(&self) -> bool {
+        self.result.get().is_some()
+    }
+
     /// The result if compilation has finished, without waiting.
-    fn ready(&self) -> Option<Option<&host::HostPipeline>> {
+    pub(crate) fn ready(&self) -> Option<Option<&host::HostPipeline>> {
         self.result.get().map(|h| h.as_ref())
     }
 
     /// Wait up to `bound` for completion. `Some(result)` when done (the
     /// inner `Option` is the refusal path), `None` on timeout (still
     /// compiling — the caller counts a residual skip, work continues).
-    fn wait(&self, bound: std::time::Duration) -> Option<Option<&host::HostPipeline>> {
+    pub(crate) fn wait(&self, bound: std::time::Duration) -> Option<Option<&host::HostPipeline>> {
         if let Some(h) = self.result.get() {
             return Some(h.as_ref());
         }
@@ -324,6 +347,23 @@ pub(crate) fn budget_skips() -> u64 {
     BUDGET_SKIPS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Binds that had to wait inline (queued result not ready, or inline
+/// fallback). Diagnostic for the first post-ban run.
+#[cfg(windows)]
+static INLINE_WAITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Total microseconds spent in inline waits (queued waits + fallback compiles).
+#[cfg(windows)]
+static INLINE_WAIT_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(windows)]
+pub(crate) fn inline_waits() -> u64 {
+    INLINE_WAITS.load(std::sync::atomic::Ordering::Relaxed)
+}
+#[cfg(windows)]
+pub(crate) fn inline_wait_us() -> u64 {
+    INLINE_WAIT_US.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The host pipeline of a title pipeline. Compilation is kicked on the
 /// background pool at creation (`hand_out`); here we wait only on the
 /// in-flight result, bounded by the time budget (five-star semantics — the
@@ -341,11 +381,22 @@ pub(crate) fn host_pipeline<'a>(this: This) -> Option<&'a host::HostPipeline> {
     if let Some(h) = p.host.ready() {
         return h;
     }
-    // Still compiling: wait only on the in-flight result, bounded.
-    let bound = first_use_budget::wait_bound();
     let start = std::time::Instant::now();
+    INLINE_WAITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    // The pool declined the job (queue full/closed): compile inline here at
+    // first use. This is the explicit, counted fallback — never a blocking
+    // enqueue on the title's CreatePipelineState thread.
+    if p.host.is_abandoned() {
+        let h = host::HostPipeline::new(&p.shaders, p.graphics.as_deref());
+        p.host.complete(h);
+        INLINE_WAIT_US.fetch_add(start.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
+        return p.host.ready().flatten();
+    }
+    // Queued: wait only on the in-flight result, bounded by the budget.
+    let bound = first_use_budget::wait_bound();
     let result = p.host.wait(bound);
     first_use_budget::spend(start.elapsed());
+    INLINE_WAIT_US.fetch_add(start.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
     match result {
         Some(h) => h, // done: success or genuine refusal
         None => {
@@ -394,13 +445,14 @@ fn hand_out(
         // Send (Arc<Shader>, Arc<GraphicsState>); errors take the refusal
         // path inside HostPipeline::new, a panic is caught by the pool, and
         // device loss surfaces as a refused result — never a crash.
-        let job_slot = Arc::clone(&slot);
         let job_shaders = shaders.clone();
         let job_graphics = graphics.clone();
-        crate::hostpool::submit(move || {
-            let h = host::HostPipeline::new(&job_shaders, job_graphics.as_deref());
-            job_slot.complete(h);
-        });
+        // The pool sets the slot on success, error AND panic; a full queue
+        // falls back to inline compilation at first use (never blocks here).
+        crate::hostpool::submit(
+            move || host::HostPipeline::new(&job_shaders, job_graphics.as_deref()),
+            Arc::clone(&slot),
+        );
     }
     let pipeline = Box::new(Pipeline {
         object: Object::new(&FUNCTIONS),
@@ -525,7 +577,7 @@ pub(crate) extern "system" fn create_stream(
     }
     let mut shaders = Vec::new();
     #[cfg(windows)]
-    let mut graphics = host::GraphicsState::default();
+    let mut graphics = host::GraphicsStateBuilder::default();
     let mut at = 0;
     while at + 8 <= desc.size {
         // SAFETY: inside the stream the title passes.
@@ -553,7 +605,7 @@ pub(crate) extern "system" fn create_stream(
     hand_out(
         shaders,
         #[cfg(windows)]
-        Some(Box::new(graphics)),
+        Some(Box::new(graphics.build())),
         iid,
         out,
     )

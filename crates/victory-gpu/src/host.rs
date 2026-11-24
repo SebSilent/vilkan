@@ -1334,6 +1334,24 @@ impl Meter {
         let budget_skips = crate::pipeline::budget_skips();
         #[cfg(not(windows))]
         let budget_skips = 0u64;
+        // Background-pool diagnostics (first post-ban run): jobs
+        // queued/completed/failed, fallbacks, max queue depth, inline waits.
+        #[cfg(windows)]
+        let pool = {
+            use std::sync::atomic::Ordering::Relaxed;
+            format!(
+                "pool q={} done={} fail={} fallback={} maxdepth={} | inline-waits={} wait-ms={}",
+                crate::hostpool::QUEUED.load(Relaxed),
+                crate::hostpool::COMPLETED.load(Relaxed),
+                crate::hostpool::FAILED.load(Relaxed),
+                crate::hostpool::FALLBACK.load(Relaxed),
+                crate::hostpool::MAX_DEPTH.load(Relaxed),
+                crate::pipeline::inline_waits(),
+                crate::pipeline::inline_wait_us() / 1000,
+            )
+        };
+        #[cfg(not(windows))]
+        let pool = String::new();
         if self.logged.elapsed() >= std::time::Duration::from_secs(5) {
             self.logged = std::time::Instant::now();
             tracing::info!(
@@ -1342,7 +1360,7 @@ impl Meter {
                  GPU; {back_ms:.1} copying back {back_mb:.1} MB; present {present_ms:.1} ms, \
                  flip {flip_ms:.1} ms), {draws:.0} draws/frame, \
                  dropped {dropped:.0} without a host pipeline and {indirect:.0} indirect, \
-                 budget-skipped {budget_skips}"
+                 budget-skipped {budget_skips}; {pool}"
             );
             #[cfg(feature = "diagnostics")]
             crate::copystat::log(frames);
