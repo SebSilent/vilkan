@@ -298,9 +298,13 @@ pub(crate) fn find(address: u64, len: u64) -> Option<Arc<Shadow>> {
     // silence before the 1a watchdog crash).
     let key = {
         let map = buffers();
+        // No take(64) cap: a large buffer (the 174 MB indirect argument
+        // buffer) has a small start with many buffers registered above it,
+        // so a fixed cap missed the containing entry and the indirect
+        // execution dropped. Scan all entries at or below the address; the
+        // first whose end covers the range is the innermost container.
         map.range(..=(address, usize::MAX))
             .rev()
-            .take(64)
             .find(|(_, e)| e.end >= end)
             .map(|(k, _)| *k)
     };
