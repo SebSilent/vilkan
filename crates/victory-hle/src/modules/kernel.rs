@@ -293,6 +293,27 @@ pub extern "system" fn ExitProcess(code: u32) -> ! {
     host::exit_process(code)
 }
 
+/// `ntdll!RtlExitUserProcess` — the path a clean guest quit takes that
+/// kernel32!ExitProcess interception misses. Log the code and the guest
+/// callers (the last guest calls before the quit).
+pub extern "system" fn RtlExitUserProcess(status: i32) -> ! {
+    tracing::warn!(code = status, from = %host::callers(), "title RtlExitUserProcess");
+    host::rtl_exit_user_process(status)
+}
+
+/// `ntdll!NtTerminateProcess`: logged like [`TerminateProcess`].
+pub extern "system" fn NtTerminateProcess(process: *mut c_void, status: i32) -> i32 {
+    tracing::warn!(code = status, from = %host::callers(), "title NtTerminateProcess");
+    host::nt_terminate_process(process, status)
+}
+
+/// `kernel32!ExitThread`: a thread ends (debug level — threads come and go);
+/// the main thread's exit is what ends the process.
+pub extern "system" fn ExitThread(code: u32) -> ! {
+    tracing::debug!(code, from = %host::callers(), "title ExitThread");
+    host::exit_thread(code)
+}
+
 /// The pseudo handle of one of our modules: its address, never a real image.
 fn handle(m: &HleModule) -> *mut c_void {
     m as *const HleModule as *mut c_void
@@ -364,6 +385,7 @@ pub(crate) fn module() -> HleModule {
         dlls: &[
             "kernel32.dll",
             "kernelbase.dll",
+            "ntdll.dll",
             "api-ms-win-core-libraryloader-*",
             "api-ms-win-core-processthreads-*",
             "api-ms-win-core-debug-*",
@@ -390,6 +412,9 @@ pub(crate) fn module() -> HleModule {
             hle_export!(_invalid_parameter_noinfo_noreturn),
             hle_export!(TerminateProcess),
             hle_export!(ExitProcess),
+            hle_export!(RtlExitUserProcess),
+            hle_export!(NtTerminateProcess),
+            hle_export!(ExitThread),
             hle_export!(SetUnhandledExceptionFilter),
         ],
     }
@@ -411,7 +436,13 @@ mod host {
         DisableThreadLibraryCalls, GetModuleFileNameA, GetModuleFileNameW, GetModuleHandleA,
         GetModuleHandleW, GetProcAddress, LoadLibraryExA, LoadLibraryExW,
     };
-    use windows_sys::Win32::System::Threading::{ExitProcess, TerminateProcess};
+    use windows_sys::Win32::System::Threading::{ExitProcess, ExitThread, TerminateProcess};
+
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        fn RtlExitUserProcess(status: i32) -> !;
+        fn NtTerminateProcess(process: *mut c_void, status: i32) -> i32;
+    }
 
     unsafe extern "C" {
         #[link_name = "exit"]
@@ -498,6 +529,21 @@ mod host {
     pub(super) fn exit_process(code: u32) -> ! {
         // SAFETY: see above.
         unsafe { ExitProcess(code) }
+    }
+
+    pub(super) fn rtl_exit_user_process(status: i32) -> ! {
+        // SAFETY: forwarding the title's own argument to the host API.
+        unsafe { RtlExitUserProcess(status) }
+    }
+
+    pub(super) fn nt_terminate_process(process: *mut c_void, status: i32) -> i32 {
+        // SAFETY: see above.
+        unsafe { NtTerminateProcess(process, status) }
+    }
+
+    pub(super) fn exit_thread(code: u32) -> ! {
+        // SAFETY: see above.
+        unsafe { ExitThread(code) }
     }
 
     pub(super) fn set_unhandled_exception_filter(filter: extern "system" fn(*const c_void) -> i32) {
@@ -596,6 +642,18 @@ mod host {
     }
 
     pub(super) fn exit_process(code: u32) -> ! {
+        std::process::exit(code as i32)
+    }
+
+    pub(super) fn rtl_exit_user_process(status: i32) -> ! {
+        std::process::exit(status)
+    }
+
+    pub(super) fn nt_terminate_process(_: *mut c_void, status: i32) -> i32 {
+        std::process::exit(status)
+    }
+
+    pub(super) fn exit_thread(code: u32) -> ! {
         std::process::exit(code as i32)
     }
 
