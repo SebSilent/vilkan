@@ -281,7 +281,7 @@ fn dump_one(
         }
         let pitch = f.RowPitch as usize;
         let rows = std::slice::from_raw_parts(data.cast::<u8>(), pitch * f.Height as usize);
-        if let Some(rgba) = to_rgba(f.Format.0 as u32, f.Width as usize, f.Height as usize, pitch, rows) {
+        if let Some(rgba) = to_rgba(f.Format.0 as u32, f.Width as usize, f.Height as usize, pitch, rows, false) {
             let name = format!(
                 "frame-{frame}-{i:02}-{resource:?}-{}x{}-f{}",
                 d.Width, d.Height, d.Format.0
@@ -334,7 +334,7 @@ pub(crate) fn flush_draw_readbacks(folder: &std::path::Path) {
             }
             let pitch = f.RowPitch as usize;
             let rows = std::slice::from_raw_parts(data.cast::<u8>(), pitch * f.Height as usize);
-            if let Some(rgba) = to_rgba(f.Format.0 as u32, f.Width as usize, f.Height as usize, pitch, rows) {
+            if let Some(rgba) = to_rgba(f.Format.0 as u32, f.Width as usize, f.Height as usize, pitch, rows, true) {
                 let _ = std::fs::write(folder.join(format!("oracle-{ordinal}.bin")), &rgba);
             }
             buffer.Unmap(0, None);
@@ -367,7 +367,10 @@ fn small_float(bits: u32, man: u32) -> f32 {
 /// as channel values scaled so the largest finite one is white (single
 /// channels: lowest black, highest white, as grey). `None` for formats not
 /// handled.
-fn to_rgba(format: u32, w: usize, h: usize, pitch: usize, rows: &[u8]) -> Option<Vec<u8>> {
+/// `preserve_alpha` keeps the real alpha byte of 8-bit RGBA formats (the
+/// per-draw oracle needs it for numeric comparison); the display dump passes
+/// false and forces opaque alpha as before.
+fn to_rgba(format: u32, w: usize, h: usize, pitch: usize, rows: &[u8], preserve_alpha: bool) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(w * h * 4);
     let px = |x: usize, y: usize, n: usize| &rows[y * pitch + x * n..][..n];
     let u16_at = |b: &[u8], i: usize| u16::from_le_bytes([b[2 * i], b[2 * i + 1]]);
@@ -376,19 +379,24 @@ fn to_rgba(format: u32, w: usize, h: usize, pitch: usize, rows: &[u8]) -> Option
     type Decode = Box<dyn Fn(&[u8]) -> [f32; 3]>;
     let (n, decode): (usize, Decode) = match format {
         27..=32 => {
+            // R8G8B8A8_*: byte 3 is a real alpha channel.
             for y in 0..h {
                 for x in 0..w {
                     let p = px(x, y, 4);
-                    out.extend([p[0], p[1], p[2], 255]);
+                    let a = if preserve_alpha { p[3] } else { 255 };
+                    out.extend([p[0], p[1], p[2], a]);
                 }
             }
             return Some(out);
         }
         87..=93 => {
+            // B8G8R8A8_* (87/90/91) carry alpha; B8G8R8X8_* (88/92/93) pad it.
+            let has_alpha = matches!(format, 87 | 90 | 91);
             for y in 0..h {
                 for x in 0..w {
                     let p = px(x, y, 4);
-                    out.extend([p[2], p[1], p[0], 255]);
+                    let a = if preserve_alpha && has_alpha { p[3] } else { 255 };
+                    out.extend([p[2], p[1], p[0], a]);
                 }
             }
             return Some(out);
