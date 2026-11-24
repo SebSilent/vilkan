@@ -1,7 +1,4 @@
-[![Discord — join the server](https://img.shields.io/badge/Discord-Join%20the%20server-5865F2?logo=discord&logoColor=white)](https://discord.gg/K7EGDqvxpF)
-
-**➤ Join the Discord: <https://discord.gg/K7EGDqvxpF>** — the place to talk, get
-access, and pick up work. See [CONTRIBUTING](CONTRIBUTING.md).
+See [CONTRIBUTING](CONTRIBUTING.md).
 
 # VIlkan — Cuck Simulator Miami (Xbox), native on Linux
 
@@ -20,7 +17,7 @@ Two backends, one loader/HLE:
   Linux-native Vulkan runtime (`vilkan-vk`), no Proton and no D3D12. Compute
   dispatch works; graphics is not implemented yet.
 
-## Status — honest
+## Status
 
 **What works today**
 
