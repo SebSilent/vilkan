@@ -7,59 +7,13 @@
 
 use anyhow::{Context as _, Result};
 use ash::vk;
-use serde::Deserialize;
 
 use crate::Context;
 
-#[derive(Deserialize)]
-pub struct RootBinding {
-    pub kind: String,
-    pub address: Option<u64>,
-}
-
-#[derive(Deserialize)]
-pub struct ViewBuffer {
-    pub address: u64,
-    pub data_file: String,
-}
-
-#[derive(Deserialize)]
-pub struct RenderTarget {
-    pub format: u32,
-    pub width: u32,
-    pub height: u32,
-}
-
-#[derive(Deserialize)]
-pub struct DrawRecord {
-    pub topology: u32,
-    pub vertex_count: u32,
-    pub instance_count: u32,
-    pub first_vertex: u32,
-    pub roots: Vec<RootBinding>,
-    pub view_buffers: Vec<ViewBuffer>,
-    pub targets: Vec<RenderTarget>,
-}
-
-/// The replayed draw's pixels (RGBA float) and size.
-pub struct ReplayResult {
-    pub width: u32,
-    pub height: u32,
-    pub pixels: Vec<f32>,
-}
-
-/// A deliberate fault, for negative controls: a check that cannot fail is not
-/// acceptance. Each fault must make the replay disagree with the oracle.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Fault {
-    None,
-    /// Skip the draw entirely (the target stays at the clear colour).
-    SkipDraw,
-    /// Corrupt the root-view buffer bytes before placing them in the heap.
-    CorruptViewBuffer,
-    /// Put the root-view address in the wrong push-constant SGPRs.
-    WrongPushConstants,
-}
+// The capture types and the fault model are backend-neutral and live in
+// `vilkan-host` (the host-trait seam). Re-exported here so existing callers
+// (`vilkan_vk::replay::{DrawRecord, Fault, ...}`) keep working unchanged.
+pub use vilkan_host::{DrawRecord, Fault, ReplayResult, RenderTarget, RootBinding, ViewBuffer};
 
 /// Replay a captured draw: SPIR-V VS/PS, root-view buffers in the heap, draw,
 /// readback. `dir` holds draw.json, vs.spv, ps.spv and the view-buffer files.

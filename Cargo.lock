@@ -1856,6 +1856,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "vilkan-host"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "vilkan-vk"
 version = "0.1.0"
 dependencies = [
@@ -1865,6 +1874,7 @@ dependencies = [
  "raw-window-handle",
  "serde",
  "serde_json",
+ "vilkan-host",
  "winit",
 ]
 
