@@ -47,19 +47,26 @@ fn replay_captured_draw_matches_oracle() {
     // Tolerance: the replay is float, the oracle RGBA8 (1/255 quantisation) plus
     // a small interpolation margin.
     let tol = 2.0 / 255.0;
-    let mut max_err = 0.0f32;
+    let mut max_err = [0.0f32; 4];
+    let mut sum_err = [0.0f64; 4];
     let mut bad = 0;
     for (i, &o) in oracle.iter().enumerate() {
         let want = o as f32 / 255.0;
         let got = result.pixels[i];
         let err = (got - want).abs();
-        if err > max_err {
-            max_err = err;
+        let c = i % 4;
+        if err > max_err[c] {
+            max_err[c] = err;
         }
+        sum_err[c] += err as f64;
         if err > tol {
             bad += 1;
         }
     }
-    eprintln!("max err {max_err:.4}, {bad}/{} channels over {tol:.4}", oracle.len());
-    assert_eq!(bad, 0, "replay disagrees with the D3D12 oracle (max err {max_err})");
+    let n = (oracle.len() / 4) as f64;
+    let mean: Vec<f64> = sum_err.iter().map(|s| s / n).collect();
+    eprintln!("per-channel max err RGBA: {max_err:?}");
+    eprintln!("per-channel mean err RGBA: {mean:?}");
+    eprintln!("{bad}/{} channels over tol {tol:.4} ({:.4}%)", oracle.len(), 100.0 * bad as f64 / oracle.len() as f64);
+    assert_eq!(bad, 0, "replay disagrees with the D3D12 oracle (max err {max_err:?})");
 }
