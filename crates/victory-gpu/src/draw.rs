@@ -808,8 +808,25 @@ impl State {
     /// D3D12 path is unchanged.
     fn capture(&self, list: &HostList, vertices: u32, instances: u32, first: u32) {
         let Some(folder) = crate::drawcap::folder() else { return };
+        // Focus on the content region: the presented frame stays black until
+        // ~frame 256, so early-frame oracles are uninformative. Capture records
+        // and oracles only from the late frames (env-tunable, default 250).
+        let from: u64 = std::env::var("VILKAN_DRAW_CAPTURE_FRAME")
+            .ok().and_then(|s| s.parse().ok()).unwrap_or(250);
+        if crate::frame::current() < from {
+            return;
+        }
         let Some(p) = crate::pipeline::host_pipeline(self.pipeline as This) else { return };
         if p.compute || p.mesh {
+            return;
+        }
+        // Minimal capture: only the descriptor-table-free root-view draw (the
+        // fullscreen pass). It needs no bindless set, so the replay can consume
+        // it directly, and capturing one draw per frame keeps the readback
+        // stalls small enough not to trip the title's GPU watchdog early.
+        let has_view = self.graphics.iter().any(|r| matches!(r, Root::View(a) if *a != 0));
+        let has_table = self.graphics.iter().any(|r| matches!(r, Root::Table(_)));
+        if !has_view || has_table {
             return;
         }
         use crate::drawcap::*;
@@ -899,11 +916,17 @@ impl State {
             Err(e) => tracing::warn!(error = %e, "draw capture serialize failed"),
         }
         // The Proton oracle: read back the render target right after this draw
-        // (the first draw), so the native replay can be checked against it.
+        // so the native replay can be checked against it. In the content region
+        // (frame >= from) read back every draw of a short window of frames, so
+        // the per-draw oracles include the root-view fullscreen pass and the
+        // composite, and we can see which carry non-uniform pixels.
         #[cfg(feature = "diagnostics")]
-        if ordinal % 500 == 1 {
-            if let Some(&t) = self.targets.first() {
-                crate::capture::note_draw_readback(ordinal, &list.list, t as This);
+        {
+            let f = crate::frame::current();
+            if f >= from && f < from + 24 {
+                if let Some(&t) = self.targets.first() {
+                    crate::capture::note_draw_readback(ordinal, &list.list, t as This);
+                }
             }
         }
     }
