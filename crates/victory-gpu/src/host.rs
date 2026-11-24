@@ -1330,6 +1330,10 @@ impl Meter {
         let flip_ms = FLIP_US.swap(0, Ordering::Relaxed) as f64 / 1e3 / frames;
         let dropped = crate::draw::take_dropped() as f64 / frames;
         let indirect = crate::list::take_indirect() as f64 / frames;
+        #[cfg(windows)]
+        let budget_skips = crate::pipeline::budget_skips();
+        #[cfg(not(windows))]
+        let budget_skips = 0u64;
         if self.logged.elapsed() >= std::time::Duration::from_secs(5) {
             self.logged = std::time::Instant::now();
             tracing::info!(
@@ -1337,7 +1341,8 @@ impl Meter {
                  {copy_mb:.1} MB, textures {texture_ms:.1} ms {texture_mb:.1} MB; {gpu:.1} on the \
                  GPU; {back_ms:.1} copying back {back_mb:.1} MB; present {present_ms:.1} ms, \
                  flip {flip_ms:.1} ms), {draws:.0} draws/frame, \
-                 dropped {dropped:.0} without a host pipeline and {indirect:.0} indirect"
+                 dropped {dropped:.0} without a host pipeline and {indirect:.0} indirect, \
+                 budget-skipped {budget_skips}"
             );
             #[cfg(feature = "diagnostics")]
             crate::copystat::log(frames);

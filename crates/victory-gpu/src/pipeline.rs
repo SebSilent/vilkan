@@ -254,6 +254,18 @@ mod first_use_budget {
     }
 }
 
+/// First-use compilations skipped because the budget was empty (work
+/// dropped, no stand-in). Distinct from genuine refusals so a budget-skip
+/// run cannot pass acceptance by silently doing less.
+#[cfg(windows)]
+static BUDGET_SKIPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Total budget-skipped first uses so far.
+#[cfg(windows)]
+pub(crate) fn budget_skips() -> u64 {
+    BUDGET_SKIPS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The host pipeline of a title pipeline, made on first use; `None` if one
 /// of its shaders does not translate or the host refuses it.
 #[cfg(windows)]
@@ -270,10 +282,13 @@ pub(crate) fn host_pipeline<'a>(this: This) -> Option<&'a host::HostPipeline> {
     // workers never sleep past the hang watchdog. When the bucket is empty,
     // skip (the pipeline compiles on a later bind once it refills).
     if !first_use_budget::available() {
-        static SKIPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let n = SKIPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        // Explicit, counted skip — NOT a genuine refusal. The caller drops
+        // this draw/dispatch (no stand-in), so this trades the stall for
+        // missing work; it is a placeholder pending background compilation
+        // (see HANDOUT §6). Counted separately so it cannot mask refusals.
+        let n = BUDGET_SKIPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         if n % 100 == 1 {
-            tracing::info!(skips = n, "first-use budget empty: compilation skipped");
+            tracing::warn!(skips = n, "first-use budget empty: work skipped (no stand-in)");
         }
         return None;
     }
