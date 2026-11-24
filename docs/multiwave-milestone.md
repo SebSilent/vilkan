@@ -111,6 +111,65 @@ Cross-lane op census across the 23: `v_readlane_b32` (10), `ds_swizzle_b32` (7),
 appear in the wider declined set). The dominant need is **branchy CFG + EXEC
 mask emulation**, then readlane/swizzle/permlanex16 cross-lane.
 
+### Narrow-fix verification (owner-approved 2026-11-24): ALL 13 FAIL — no safe candidate
+
+The owner approved a NARROW fix only: stop declaring `wave_min=wave_max=64` on
+shaders we did not take to wave64 semantics, **but only for PSOs confirmed
+wave-size agnostic by code reading** (no `WaveGetLaneCount`/lane-index
+dependence, no divergence-sensitive reduction, no 64-lanes-per-group
+assumption). Anything failing stays declined. **Result: all 13 fail. Zero safe
+candidates. `lower.rs` is NOT changed.** Evidence per class (read-only IR +
+structured analysis of `cache/refused/*.bin`, host-side audit tool, untracked):
+
+**Universal evidence (all 13):** every one has `st.highs > 0` — wave64 64-bit
+lane masks (low dword keyed by high dword, `structure.rs:311`). `console_lanes`
+is true for all 13, so the emitter lowers mask-as-data through `lane_bit`
+(`lower.rs:1634-1660`), which emits **`waveGetLaneIndex`** and selects
+`lane < 32 ? lo : hi` — an explicit 64-lane split. On a 32-wide host
+`waveGetLaneIndex`∈[0,31], so `lane<32` is always true and the hi dword (console
+lanes 32–63) is never read; a 64-thread group run as 2×32 waves would test the
+wrong mask bits. Clearing `wave_size` would therefore be **incorrect**, not a
+free win.
+
+| hash | tot | class | concrete evidence |
+|------|-----|-------|-------------------|
+| 196bf6114ff3a131 | 64 | LDS-within-wave | ds_ops=3, **barriers=0**, lds=128dw |
+| 339d476c267c03c7 | 64 | LDS-within-wave | ds_ops=5, barriers=0, lds=128dw |
+| 369cbe906ea72764 | 64 | LDS-within-wave + 64-bit masks | ds_ops=15, barriers=0, highs=71 |
+| 5b2ce592c3a5dd09 | 64 | LDS-within-wave | ds_ops=23, barriers=0, lds=256dw |
+| 6336cb3769fc53d7 | 64 | LDS-within-wave | ds_ops=3, barriers=0, lds=128dw |
+| 78c04f8d197a2904 | 64 | LDS-within-wave | ds_ops=112, barriers=0, lds=896dw |
+| b96880482a17f632 | 64 | LDS-within-wave + 64-bit masks | ds_ops=5, barriers=0, highs=393 |
+| e24dff38794241ab | 64 | LDS-within-wave | ds_ops=91, barriers=0, lds=896dw |
+| e798cc38df9dabc0 | 64 | LDS-within-wave | ds_ops=24, barriers=0, lds=256dw |
+| 0e90505eff274aa4 | 64 | divergence-sensitive reduction | `s_bcnt1_i32_b64` (64-bit ballot popcount), highs=27 |
+| d3e5b737ea7cc150 | 64 | 64-bit mask-as-data | highs=611, active=600, `s_mov_b32`/`s_cselect_b32` read masks |
+| a1f6cdf8874960a9 | 64 | lane-index + reduction | `v_mbcnt_lo/hi_u32_b32`, `s_bcnt1_i32_b64`, `s_ff1_i32_b64`, highs=71 |
+| e81fd01512ba1002 | 32 | lane-index + reduction | `v_mbcnt_lo/hi_u32_b32`, `s_bcnt1_i32_b64`, highs=10 |
+
+- **LDS-within-wave (9):** 64-thread group, LDS>0, **zero `s_barrier`** despite
+  dozens of `ds_*` ops — the console compiler omits barriers because all 64
+  lanes are one wave (`lower.rs:357-359` comment). A 32-wide host splits the
+  group into 2 waves → the un-barriered LDS sharing races. Not agnostic.
+- **Divergence-sensitive reduction / lane-index (3):** `s_bcnt1_i32_b64` counts
+  set bits across a 64-bit ballot; `v_mbcnt` derives a lane index from the mask;
+  `s_ff1_i32_b64` finds the first set lane. All assume 64 lanes. Not agnostic.
+- **64-bit mask-as-data (1):** d3e5b737 reads 611 wave64 masks as numbers. Not
+  agnostic.
+- **Correction to the census:** a1f6cdf8 and e81fd015 DO carry a lane op
+  (`v_mbcnt`); the earlier "no cross-lane op" label counted only
+  readlane/writelane/permlane/swizzle/DPP data movement, not lane-index ops.
+  They are lane-index dependent regardless.
+
+**Conclusion — genuine wall for the narrow fix.** The `WaveSize(64)` declaration
+is CORRECT for these 13: they genuinely need 64 lanes. The host refusal is the
+32-wide host honestly rejecting a shader it cannot run correctly. There is no
+declaration-only fix; making them run requires emulating 64-lane semantics on
+32-wide (groupshared LDS + barriers, mask ring, scheduler) — i.e. the emitter
+milestone (Option A/C), which remains **parked for owner approval**. Per the
+rule "anything that fails stays declined — do not force it through", `lower.rs`
+is left unchanged and all 23 stay declined and logged identically.
+
 ## 2. Leonida wave64 audit — clean-room, SPIR-V-only emission
 
 Reference: the local Leonida clone (`../leonida`, dead, scavenge-only). Core in
@@ -191,6 +250,21 @@ exchange + mask ring. Handles multi-wave AND branchy AND masks uniformly.
 - **Breaks:** nothing if additive, but it is a new emitter path (owner said
   owning our emitter is a deliberate milestone — this IS that).
 - **Covers:** all 26 declines + 23 refusals in principle.
+
+### Framing superseded by the narrow-fix verification (owner-approved 2026-11-24)
+
+The owner approved a declaration-only narrow fix for the 13 "no-cross-lane"
+PSOs, hoping they were wave-size agnostic and thus a quick win OUTSIDE the
+emitter milestone. **Code reading proved all 13 wave-size DEPENDENT** (§1
+"Narrow-fix verification"): 9 LDS-within-wave (barriers=0), 3 lane-index /
+divergence-sensitive reduction, 1 64-bit mask-as-data; all carry wave64 64-bit
+masks lowered through `waveGetLaneIndex` + a `lane<32` split. **So the 13 are
+NOT a separate quick win — they belong to the emitter milestone exactly like
+the 10 cross-lane PSOs.** The "multi-wave milestone" framing is superseded:
+there is no declaration-only subset; all 23 refusals need 64-lane emulation on
+the 32-wide host. The cross-lane remainder (readlane/swizzle/permlanex16) plus
+these 13 mask/LDS shaders together ARE the real emitter milestone, still parked
+for owner approval. `lower.rs` unchanged; no safe candidate to force through.
 
 ### Recommendation (pending owner)
 **A first** — branchy CFG is 22/23 of the refusals, reuses our exchange buffer,
