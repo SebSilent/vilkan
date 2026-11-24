@@ -156,17 +156,6 @@ cargo build --profile diag -p vilkan --features diagnostics
 | `VICTORY_D3D12_DEBUG=1` | host debug layer |
 | `VICTORY_D3D12_WARP=1` | host device on the software adapter |
 
-## Naming and merge-ability
-
-The **library crates are upstream's `victory-*`**, the config/marker files are
-`victory.toml`/`.victory-root`, and the code reads the upstream `VICTORY_*` env
-vars — kept identical to upstream so updates merge cleanly. **VIlkan branding is
-ours:** the app/binary `vilkan.exe`, the window/adapter strings, `vilkan-vk`,
-`exchange.rs`, the scripts, docs, and our user-facing env vars (`VILKAN_DATA`,
-`VILKAN_GAME_DIR`, `VILKAN_TITLE_EXE`, `VILKAN_SHADER_FIXTURES`,
-`VILKAN_BCPACK_TABLES`, `VILKAN_VK_FIXTURES`). See [docs/sync.md](docs/sync.md)
-for the upstream-sync workflow and [CONTRIBUTING.md](CONTRIBUTING.md).
-
 ## Publishing
 
 This tree **is the clean origin**: initialized fresh from the scrubbed working

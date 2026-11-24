@@ -44,14 +44,6 @@ is committed. `cargo xtask policy` runs with **zero exceptions**; the scrub
 (`scripts/scrub.py --check`) must report nothing to change. Nothing game-derived
 or title-identifying may end up tracked at any point.
 
-### Upstream sync workflow
-
-See [docs/sync.md](docs/sync.md): pull upstream into the `victory-*` library
-crates, merge (our functional changes are few and listed there), re-run
-`scripts/scrub.py`, then verify `cargo xtask policy` and the suite. Keep our
-branding (`vilkan.exe`, `vilkan-vk`, `exchange.rs`, scripts, docs) and the
-upstream identifiers (`victory-*`, `VICTORY_*`, `victory.toml`) intact.
-
 ### Before you commit
 
 ```bash
