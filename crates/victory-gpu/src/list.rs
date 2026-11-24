@@ -1136,12 +1136,12 @@ extern "system" fn draw(_: This) {
 /// `ExecuteIndirect(signature, max count, arguments, offset, count buffer,
 /// offset)`. Chores Simulator Miami's signatures  hold one
 /// argument each: draw (stride 16), indexed draw (20), dispatch (12), mesh
-/// dispatch (12), and a console type 105 (stride 12, fields 0, 60000, 0,
-/// over its 174 MB buffer) whose meaning is unknown. Those of PC types run
-/// through the host's indirect execution (`State::execute_indirect`).
-/// shortcut: type 105 and signatures that change root arguments are
-/// dropped (logged once per signature); decode 105 when its draws are
-/// missed.
+/// dispatch (12), and the console's single-pass dispatch, type 105 (stride
+/// 12: the three group counts; its flags live in the signature, the title
+/// passes none), run as a plain dispatch. They run through the host's
+/// indirect execution (`State::execute_indirect`).
+/// shortcut: signatures that change root arguments are dropped (logged
+/// once per signature).
 extern "system" fn execute_indirect(
     this: This,
     signature: This,
@@ -1171,8 +1171,15 @@ extern "system" fn execute_indirect(
         && let ([[kind, ..]], Some(address)) = (args, address)
         && (count.is_null() || counter.is_some())
     {
+        // The console's single-pass dispatch, type 105 (stride 12: the three
+        // group counts; its flags live in the signature, the title passes
+        // none), runs as a plain dispatch. Fact from the upstream reference;
+        // our own implementation, our VICTORY_INDIRECT gate kept.
+        const DISPATCH: u32 = 2;
+        const DISPATCH_SINGLE: u32 = 105;
+        let kind = if *kind == DISPATCH_SINGLE { DISPATCH } else { *kind };
         with_state(this, |list, s| {
-            ran = s.execute_indirect(list, (*kind, stride, max), address, counter);
+            ran = s.execute_indirect(list, (kind, stride, max), address, counter);
         });
     }
     if ran {
