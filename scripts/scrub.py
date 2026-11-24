@@ -23,15 +23,22 @@ from pathlib import Path
 # Explicit, ordered mapping. Longer phrases first so they win over substrings.
 # Each replacement must not re-match a later rule (idempotence).
 # The identifying strings live in an untracked local mapping (gitignored), so
-# nothing identifying is tracked. A clean clone without it scrubs nothing.
+# nothing identifying is tracked. The mapping is LOCAL-ONLY and REQUIRED for
+# syncs: the ingestion gate depends on it. If it is absent we fail loudly —
+# never silently no-op, so a clean clone without the mapping cannot appear to
+# pass. (See docs/sync.md.)
 import importlib.util as _ilu
 _map_path = Path(__file__).with_name("scrub-map.local.py")
-LITERAL, REGEX = [], []
-if _map_path.exists():
-    _spec = _ilu.spec_from_file_location("scrub_map", _map_path)
-    _m = _ilu.module_from_spec(_spec)
-    _spec.loader.exec_module(_m)
-    LITERAL, REGEX = _m.LITERAL, _m.REGEX
+if not _map_path.exists():
+    sys.exit(
+        f"scrub: required local mapping missing: {_map_path}\n"
+        "The identifying-string mapping is local-only (gitignored) and required\n"
+        "for upstream syncs. Restore it before running the scrub / ingestion gate."
+    )
+_spec = _ilu.spec_from_file_location("scrub_map", _map_path)
+_m = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(_m)
+LITERAL, REGEX = _m.LITERAL, _m.REGEX
 # Regex rules: title-specific code offsets and release/signature dates.
 TEXT_EXT = {".rs", ".toml", ".md", ".sh", ".py", ".bat", ".txt"}
 

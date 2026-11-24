@@ -24,7 +24,11 @@ VIlkan is built on VIctory. The library crates keep their upstream names
 2. **Re-run the scrub.** `python3 scripts/scrub.py` strips the title,
    publisher, release/scene tags and title-identifying strings that upstream
    prose reintroduces. It is idempotent and safe to re-run; `--check` reports
-   what would change without writing.
+   what would change without writing. **The identifying-string mapping is
+   local-only** (`scripts/scrub-map.local.py`, gitignored) and **required**: the
+   scrub fails loudly if it is absent, never silently no-ops, so a clean clone
+   without the mapping cannot appear to pass the ingestion gate. Restore the
+   mapping before syncing.
 3. **Verify the policy.** `cargo xtask policy` must pass with **zero
    exceptions** — nothing game-derived may be tracked at any point. If a sync
    brings in a binary asset or a title-identifying string, remove it (move
