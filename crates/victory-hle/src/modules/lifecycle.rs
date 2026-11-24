@@ -75,7 +75,7 @@ fn backend_window_name_w(name: PCWSTR) -> Vec<u16> {
     let mut buf: Vec<u16> = if name.is_null() {
         Vec::new()
     } else {
-        unsafe { (0..).take_while(|&i| *name.0.add(i) != 0).map(|i| *name.0.add(i)).collect() }
+        unsafe { (0..).take_while(|&i| *name.add(i) != 0).map(|i| *name.add(i)).collect() }
     };
     buf.extend(backend_suffix().encode_utf16());
     buf.push(0);
@@ -88,7 +88,7 @@ fn backend_window_name_a(name: PCSTR) -> Vec<u8> {
     let mut buf: Vec<u8> = if name.is_null() {
         Vec::new()
     } else {
-        unsafe { (0..).take_while(|&i| *name.0.add(i) != 0).map(|i| *name.0.add(i)).collect() }
+        unsafe { (0..).take_while(|&i| *name.add(i) != 0).map(|i| *name.add(i)).collect() }
     };
     buf.extend(backend_suffix().bytes());
     buf.push(0);
@@ -111,7 +111,7 @@ pub extern "system" fn CreateWindowExW(
 ) -> HWND {
     let (x, y, width, height) = fit(parent, x, y, width, height);
     let name_buf = backend_window_name_w(name);
-    let name = PCWSTR(name_buf.as_ptr());
+    let name: PCWSTR = name_buf.as_ptr();
     // SAFETY: the title's own arguments, forwarded (the size fitted, the
     // name labelled); name_buf lives through the call.
     let hwnd = unsafe {
@@ -140,7 +140,7 @@ pub extern "system" fn CreateWindowExA(
 ) -> HWND {
     let (x, y, width, height) = fit(parent, x, y, width, height);
     let name_buf = backend_window_name_a(name);
-    let name = PCSTR(name_buf.as_ptr());
+    let name: PCSTR = name_buf.as_ptr();
     // SAFETY: the title's own arguments, forwarded (the size fitted, the
     // name labelled); name_buf lives through the call.
     let hwnd = unsafe {

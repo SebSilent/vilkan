@@ -33,7 +33,6 @@ pub fn run(
         _ => "DX12",
     };
     println!("backend        {backend}");
-    tracing::info!(backend, "active backend");
 
     let images = cfg.cache_subdir("images")?;
     victory_hle::modules::d3d12x::use_shader_cache(cfg.cache_subdir("shaders")?);
