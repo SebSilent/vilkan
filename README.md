@@ -1,144 +1,101 @@
-# VIlkan
+# VIlkan — GTA VI Xbox, native on Linux
 
-VIlkan — Cuck Simulator Miami (Xbox), native on Linux.
+**VIlkan is built on [VIctory](https://github.com/raffclar/victory)** (the Xbox
+Series X|S → Windows compatibility layer), with our own Linux runtime, wave64
+work, and a native Vulkan translation path. The title's x86-64 code runs
+unchanged inside our process; VIlkan supplies the platform underneath it. The
+supported title is referred to only as **Cuck Simulator Miami (CSM)**. See
+[NOTICE](NOTICE) for attribution and what is ours.
 
-**Discord: <https://discord.gg/K7EGDqvxpF>**
+Two backends, one loader/HLE:
 
-Cuck Simulator Miami (CSM), the Xbox Series X|S build, running **natively on
-Linux** from files the user supplies. The title's x86-64 code runs unchanged
-inside our process; we supply the console platform underneath it and convert
-the title's data, ahead of time where it can and on first use where it must
-(shaders). See [docs/architecture.md](docs/architecture.md).
+- **Proton bootstrap (temporary):** the Windows binary (`vilkan.exe`, host
+  D3D12) runs under Proton → VKD3D-Proton → Vulkan. This is how we boot today.
+- **Native Vulkan (the target):** our own RDNA2 → SPIR-V translation and a
+  Linux-native Vulkan runtime (`vilkan-vk`), no Proton and no D3D12. Compute
+  dispatch works; graphics is not implemented yet.
 
-## Backends: bootstrap now, native Vulkan next
+## Status — honest
 
-The goal is a **native Linux process with our own Vulkan backend** — no
-Proton, no D3D12. We get there in two stages:
+**What works today**
 
-1. **Bootstrap (today): D3D12 → VKD3D-Proton.** We cross-compile a Windows
-   binary (`vilkan.exe`, MSVC target) and run it under **Proton**, so the host
-   D3D12 it emits is translated to Vulkan by VKD3D-Proton. This reuses the
-   loader, HLE, shader translation and formats, and changes only the host
-   underneath. It is a **temporary bootstrap backend**, not the destination.
-2. **Target: our own RDNA2 → SPIR-V Vulkan backend.** A native Linux
-   device proxy behind the console D3D12 ABI that records the console's
-   commands and replays them on Vulkan, with the console GPU code recompiled
-   straight to SPIR-V. This drops Proton entirely.
+- **Proton bootstrap boots and runs.** Menus, first-boot screens and the
+  loading→world transition run at the title's 30 fps on an NVIDIA RTX 2070
+  through Proton, with 0 shader refusals and 0 crashes in a verified boot.
+- **wave64-on-wave32 exchange, with numeric proof.** Console wave64 compute
+  runs on a 32-lane host via a backend-neutral round-scheduler exchange
+  (`crates/victory-shader/src/emit/exchange.rs`). A CPU oracle checks slot
+  indices and parity against console semantics, and native GPU tests check
+  cross-half readlane/writelane numerically.
+- **Native Vulkan compute dispatch on NVIDIA.** `vilkan-vk` (ash) dispatches
+  sidecar-compiled SPIR-V directly on Linux. The two captured blur shaders run
+  against a crafted bindless descriptor set and pass numeric box-filter checks
+  (constant, impulse, gradient) on the RTX 2070 (subgroup 32).
 
-The **wave64 exchange** (`crates/victory-shader/src/emit/exchange.rs`) is
-**backend-neutral**: it emits no subgroup operations and derives lanes from
-the workgroup-local index, so the same planner, slot layout and protocol
-lower to DXIL today and will be **reused unchanged by the SPIR-V emitter**.
-See [docs/wave64-exchange.md](docs/wave64-exchange.md) for the technique and
-[docs/linux-proton.md](docs/linux-proton.md) for what must become true to
-switch backends.
+**What does not work**
 
-### First native execution (no Proton, no D3D12)
+- **The world is dark.** Most scene geometry is drawn indirectly through mesh
+  shaders we do not yet translate; those draws are dropped. This is the
+  untranslated-mesh/indirect gap, not a crash.
+- **No native graphics path yet.** `vilkan-vk` does compute only; there is no
+  native Vulkan vertex/pixel/mesh pipeline or presentation. Graphics still goes
+  through the Proton/D3D12 bootstrap.
 
-The `vilkan-vk` crate (ash) runs sidecar-compiled SPIR-V **natively on Linux**,
-built with plain `cargo`. The shader compiler is a clean-room RDNA2 translator
-reused offline as a sidecar — not ported, not reimplemented (its provenance and
-license position are in a local, untracked note). The cross-half wave64
-fixtures dispatch on the RTX 2070 (subgroup 32) with `--wave64-emulate` and
-match the console reference numerically; both captured blur shaders compile to
-validated wave64-emulated SPIR-V from the real header metadata. See
-[docs/native-vulkan.md](docs/native-vulkan.md) for the contract and the
-remaining blur-dispatch step (the bindless descriptor heap).
+**What you must supply yourself** (none of it is in this repo)
 
-## Built on VIctory
+- **The title** — your own dump of Cuck Simulator Miami (Xbox Series X|S).
+  Point `VILKAN_GAME_DIR` (or `GAME_DIR`) at its folder.
+- **The external translator** — a clean-room RDNA2 → SPIR-V translator
+  (GPL-3.0) for the native path, invoked as a sidecar. Set `TRANSLATOR_DIR`.
+  We do not redistribute it; see [NOTICE](NOTICE) and `LOCAL-NOTES.md`.
+- **Fixture paths** for the data-dependent tests: `VILKAN_VK_FIXTURES` (SPIR-V),
+  `VILKAN_SHADER_FIXTURES` (captured containers), `VILKAN_BCPACK_TABLES`
+  (BCPack tables). **Every step that needs these skips cleanly when they are
+  absent**, so a clean clone with no game data builds and passes the suite.
 
-**VIlkan is built on [VIctory](https://github.com/raffclar/victory)**, an Xbox
-Series X|S → Windows compatibility layer, with **our own Linux runtime and
-wave64 work** and a **native Vulkan translation path**. See [NOTICE](NOTICE)
-for what is upstream, what we changed, and what is ours.
+## Build and run from a clean clone
 
-To keep pulling upstream updates, the **library crates keep their upstream
-names** (`victory-core`, `victory-shader`, `victory-gpu`, …), as do the upstream
-config/marker files (`victory.toml`, `.victory-root`) and the upstream
-`VICTORY_*` environment variables the code reads. **Everything we own is named
-VIlkan**: the app crate/binary (`vilkan.exe`), the native Vulkan runtime
-(`vilkan-vk`), the wave64 exchange, our window/adapter strings and log
-prefixes, our scripts and docs, and our own environment variables
-(`VILKAN_DATA`, `VILKAN_GAME_DIR`, `VILKAN_TITLE_EXE`, `VILKAN_SHADER_FIXTURES`,
-`VILKAN_BCPACK_TABLES`, `VILKAN_VK_FIXTURES`). `scripts/run.sh` bridges our
-user-facing variables to the upstream ones. The sync workflow is in
-[docs/sync.md](docs/sync.md).
+Requirements: Rust (pinned in `rust-toolchain.toml`), a CPU with AVX2. For the
+Proton path: Steam with a Proton runtime, and a Vulkan GPU. For the native path:
+a Vulkan 1.3 driver, `llvm-mc` (AMDGPU target) and `spirv-tools`
+(`spirv-as`/`spirv-val`), and the external translator.
 
-## Publishing
-
-This tree **is the clean origin**: it was initialized fresh from the scrubbed
-working tree with a single commit, no remotes, no tags and no prior history.
-The earlier fork history (which named the title and upstream projects) was
-moved aside to a private backup outside the tree and is never published. The
-asset policy ([docs/asset-policy.md](docs/asset-policy.md)) keeps the tree
-free of game-derived and identifying material; commit messages here carry no
-title, publisher or upstream project names. Do not add a remote that points
-at the old fork or push its history.
-
-## Linux quick start (bootstrap)
-
-```sh
-cargo install cargo-xwin --locked   # once; also needs clang
-scripts/build.sh                    # cross-compiles vilkan.exe (MSVC target)
-# point at YOUR title dump (no path is hardcoded):
-export GAME_DIR=/path/to/your/title/dump
-scripts/run.sh                      # boots the title under Proton Experimental
+```bash
+# 1. Build and test the platform code. Needs NO game data and NO translator.
+cargo test -p victory-shader -p victory-formats -p victory-core \
+           -p victory-game -p victory-pipeline -p vilkan-vk --lib
+cargo xtask policy        # the no-game-assets rule, zero exceptions
 ```
 
-The title path and data dir come from config/env: `GAME_DIR` (or
-`VILKAN_GAME_DIR`, or `[paths].game_dir` in `victory.toml`), and `VILKAN_DATA`
-for the prefix/cache/data root (default `../vilkan-data`, **outside** the
-repo). `scripts/run.sh` finds the title executable in `GAME_DIR` (or takes
-`VILKAN_TITLE_EXE`). Game-derived data never lives in the tree.
+The fixture-dependent tests (captured shaders, BCPack tables, native dispatch)
+**skip** here because their env paths are unset — that is expected, not a failure.
 
-## Status
-
-**Not playable yet.** On an NVIDIA RTX 2070 (wave32) under Proton: the title
-boots through its first-boot screens and menus at 30 fps, loads the world and
-stays up; the world picture is black (indirect draws and untranslated mesh
-shaders — the next blocker). The wave64 blur computes that a wave32 host
-refuses are lowered by the backend-neutral exchange and accepted (0 refusals,
-0 crashes). See [docs/linux-proton.md](docs/linux-proton.md).
-
-## Getting started
-
-Requirements: a CPU with AVX2, a Vulkan GPU (the bootstrap runs the Windows
-binary under Proton; Shader Model 6.6 and mesh shaders for the world), Rust
-(pinned in `rust-toolchain.toml`), clang + cargo-xwin to cross-compile.
-
-```sh
-cargo xtask install-hooks                # asset-policy check on every commit
-cp victory.example.toml victory.toml       # then set your paths (outside the repo)
-cargo test --workspace                   # needs no game data
-cargo run -p vilkan -- config            # check your paths
+```bash
+# 2. Proton bootstrap (needs the title + Proton). Cross-compile the Windows
+#    binary, then run it under Proton.
+cargo install cargo-xwin
+rustup target add x86_64-pc-windows-msvc
+scripts/build.sh                       # -> target/.../release/vilkan.exe
+VILKAN_GAME_DIR=/path/to/title scripts/run.sh
 ```
 
-The full test suite passes on a clean clone with no game data: tests that
-need real title files read their paths from environment variables and skip
-when unset.
+`scripts/run.sh` takes the title path from `GAME_DIR`/`VILKAN_GAME_DIR` (or
+`[paths].game_dir` in `victory.toml`); there is no hardcoded title path. It
+bridges our `VILKAN_*` vars to the upstream `VICTORY_*` config the binary reads.
+Without a title it exits with a clear message; nothing is bundled.
 
-Run the title (bootstrap):
-
-```sh
-scripts/build.sh
-GAME_DIR=/path/to/your/dump scripts/run.sh
+```bash
+# 3. Native Vulkan compute (needs a Vulkan driver + the translator + fixtures).
+cargo build -p vilkan-vk
+# Compile a captured shader to SPIR-V with the external translator:
+TRANSLATOR_DIR=/path/to/translator python3 scripts/compile-native.py <blob> <out>
+# Run the numeric dispatch tests against compiled fixtures:
+VILKAN_VK_FIXTURES=/path/to/spirv cargo test -p vilkan-vk
 ```
 
-The window caption shows the framerate. Saves, settings and `crashes.log`
-are kept under the data folder, derived data under the cache folder (both
-outside the repo).
-
-Input: XInput pads. With none connected the keyboard is a pad while the
-title's window has focus:
-
-| Keys | Pad |
-|------|-----|
-| W A S D / I J K L | left / right stick |
-| arrows | D-pad |
-| Enter, Backspace, X, Y | A, B, X, Y |
-| Q / E, Z / C | shoulders, triggers |
-| F / H | stick clicks |
-| Esc, Tab | Menu, View |
+Without `TRANSLATOR_DIR` the compile step exits with a clear message; without
+`VILKAN_VK_FIXTURES` the dispatch tests skip. The platform suite (step 1) always
+passes regardless.
 
 ## Commands
 
@@ -154,13 +111,28 @@ vilkan config
 ```
 
 Logging: `VICTORY_LOG=victory_loader=trace,info` (a release build logs info and
-above).
+above). Saves, settings and `crashes.log` live under the data folder; derived
+data under the cache folder — both outside the repo (`../vilkan-data` by default).
+
+## Input
+
+XInput pads. With none connected the keyboard is a pad while the title's window
+has focus:
+
+| Keys | Pad |
+|------|-----|
+| W A S D / I J K L | left / right stick |
+| arrows | D-pad |
+| Enter, Backspace, X, Y | A, B, X, Y |
+| Q / E, Z / C | shoulders, triggers |
+| F / H | stick clicks |
+| Esc, Tab | Menu, View |
 
 ## Debugging
 
-A release build has no debugging aids. Build them in with:
+A release build has no debugging aids. Build them in with
 
-```sh
+```powershell
 cargo build --profile diag -p vilkan --features diagnostics
 ```
 
@@ -169,21 +141,29 @@ cargo build --profile diag -p vilkan --features diagnostics
 | `VICTORY_LOG=<target>=debug,...` | debug and trace output |
 | `VICTORY_STACKS=20,60` | every thread's stack at those seconds |
 | `VICTORY_WATCH=<rva>,...` | logs a title u32 when it changes |
-| `VICTORY_KEYS=30:Enter,35:X` | presses keys at those seconds, focus or not |
-| `VICTORY_CRASH_SAVE=<rva>:<len>,...` | saves title memory to the cache folder on a crash |
+| `VICTORY_KEYS=30:Enter,35:X` | presses keys at those seconds |
+| `VICTORY_CRASH_SAVE=<rva>:<len>,...` | saves title memory on a crash |
 | `VICTORY_CAPTURE=<dir>` | saves presented frames |
-| `VICTORY_DUMP_TARGETS=1` | with the above, saves every render target of those frames |
+| `VICTORY_DUMP_TARGETS=1` | with capture, saves every render target |
 | `VICTORY_D3D12_DEBUG=1` | host debug layer |
-| `VICTORY_INDIRECT=1` | runs the title's indirect draws and dispatches |
-| `VICTORY_D3D12_GBV=1` | with the above, GPU-based validation |
-| `VILKAN_D3D12_DRED=1` | on a GPU failure, the allocation hit and commands in flight |
 | `VICTORY_D3D12_WARP=1` | host device on the software adapter |
-| `VILKAN_AUDIO_CAPTURE=<file.wav>` | records what the title plays |
-| `VILKAN_XMA_DUMP=<dir>` | saves the first XMA voices' context and input |
 
-Every build appends crashes and host GPU failures to `crashes.log` in the
-title's data folder.
+## Naming and merge-ability
 
-## License
+The **library crates are upstream's `victory-*`**, the config/marker files are
+`victory.toml`/`.victory-root`, and the code reads the upstream `VICTORY_*` env
+vars — kept identical to upstream so updates merge cleanly. **VIlkan branding is
+ours:** the app/binary `vilkan.exe`, the window/adapter strings, `vilkan-vk`,
+`exchange.rs`, the scripts, docs, and our user-facing env vars (`VILKAN_DATA`,
+`VILKAN_GAME_DIR`, `VILKAN_TITLE_EXE`, `VILKAN_SHADER_FIXTURES`,
+`VILKAN_BCPACK_TABLES`, `VILKAN_VK_FIXTURES`). See [docs/sync.md](docs/sync.md)
+for the upstream-sync workflow and [CONTRIBUTING.md](CONTRIBUTING.md).
 
-GPL-3.0-or-later. See [LICENSE](LICENSE).
+## Publishing
+
+This tree **is the clean origin**: initialized fresh from the scrubbed working
+tree, no remotes, no tags, no prior fork history. The asset policy
+([docs/asset-policy.md](docs/asset-policy.md)) keeps the tree free of
+game-derived and identifying material; commit messages carry no title,
+publisher or upstream-project names beyond the credited attribution. Do not add
+a remote that points at the old fork or push its history.
