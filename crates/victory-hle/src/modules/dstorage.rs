@@ -27,7 +27,7 @@ use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};
 
 use victory_formats::bcpack::{self, Tables};
 
-use super::xasync::{E_INVALIDARG, E_NOTIMPL, E_PENDING};
+use super::xasync::{E_ABORT, E_INVALIDARG, E_NOTIMPL, E_PENDING};
 use super::xgameruntime::{Guid, HRESULT, Methods, Object, S_OK, add_ref, missing, put};
 use crate::{HleModule, hle_export};
 
@@ -648,6 +648,19 @@ fn close_lane(id: u64) {
         return;
     };
     lane.closed = true;
+    // A closed queue's pending statuses must COMPLETE (with E_ABORT), not
+    // stay E_PENDING forever: the title polls is_complete on the entry, and
+    // clearing without storing left entry 0 pending since boot (25-38M
+    // polls). Real hardware cancels pending requests on close. Complete the
+    // unsubmitted Status commands and the submitted statuses before clearing.
+    for command in &lane.unsubmitted {
+        if let Command::Status(status) = command {
+            status.entry().store(E_ABORT, Ordering::Release);
+        }
+    }
+    for (_, status) in &lane.statuses {
+        status.entry().store(E_ABORT, Ordering::Release);
+    }
     lane.unsubmitted.clear();
     lane.reads.clear();
     lane.statuses.clear(); // releases their arrays

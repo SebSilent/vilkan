@@ -298,14 +298,17 @@ pub(crate) fn find(address: u64, len: u64) -> Option<Arc<Shadow>> {
     // silence before the 1a watchdog crash).
     let key = {
         let map = buffers();
-        // No take(64) cap: a large buffer (the 174 MB indirect argument
-        // buffer) has a small start with many buffers registered above it,
-        // so a fixed cap missed the containing entry and the indirect
-        // execution dropped. Scan all entries at or below the address; the
-        // first whose end covers the range is the innermost container.
+        // O(log n) BTree seek, not a scan: the containing buffer is the
+        // greatest start <= address (the title's allocations are distinct).
+        // The 174 MB indirect argument buffer is found because its start is
+        // the predecessor of any address inside it. If the predecessor does
+        // not cover the range (a gap, or a sub-allocation), fall through to
+        // loose(), which shadows the raw memory. Complexity: the original
+        // take(64) was O(64) but missed large containers; the uncapped scan
+        // was O(n) per draw/dispatch (a stall risk); this is O(log n).
         map.range(..=(address, usize::MAX))
-            .rev()
-            .find(|(_, e)| e.end >= end)
+            .next_back()
+            .filter(|(_, e)| e.end >= end)
             .map(|(k, _)| *k)
     };
     let Some(key) = key else {
