@@ -51,14 +51,17 @@ size is logged at device creation.
   `spirv-val`. Fixtures come from `VILKAN_VK_FIXTURES` and skip when unset.
 - **Done:** both captured blur shaders compile to validated wave64-emulated
   SPIR-V (zero subgroup ops, LocalSize 8×8×1), from the real header metadata.
-- **Wall — blur dispatch:** the blur shaders sample a texture and write UAV
-  images through a **bindless descriptor heap** (runtime arrays of sampled
-  images, samplers and storage images at set 0, indexed by a descriptor hash
-  table over the T#/V#/S# the game binds). Dispatching them needs that
-  descriptor runtime — image/sampler management, the hash-table lookup, literal
-  sampler registration — a major feature beyond the buffer-dispatch runtime
-  built here. Whether a minimal crafted descriptor setup suffices for a test
-  dispatch is under investigation (see the local note).
+- **Blur dispatch — tractable, not a fundamental wall:** the blur shaders
+  sample a texture and write UAV images through a **bindless descriptor heap**
+  (runtime arrays of sampled images, samplers and storage images at set 0,
+  indexed by an FNV-1a descriptor hash table over the T#/S# keys). The
+  reference Vulkan test harness already binds sampled images/samplers this way
+  and crafts the heap contents itself. For a test dispatch we control the heap,
+  so a **minimal crafted setup** suffices — a small fixed bindless set
+  (bindings 0/1/2/8/9/10), a hand-built hash-table buffer, crafted T#/S# keys,
+  an input texture + sampler + output UAVs — not a full descriptor runtime.
+  The blurs use 1 sampled image, 1 sampler, 4 storage images, 1 buffer. This is
+  the next step (details in the local note).
 
 The black-world indirect-draw/mesh-shader gap is a separate blocker and is not
 chased here.
