@@ -270,6 +270,11 @@ pub(crate) fn host_pipeline<'a>(this: This) -> Option<&'a host::HostPipeline> {
     // workers never sleep past the hang watchdog. When the bucket is empty,
     // skip (the pipeline compiles on a later bind once it refills).
     if !first_use_budget::available() {
+        static SKIPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = SKIPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        if n % 100 == 1 {
+            tracing::info!(skips = n, "first-use budget empty: compilation skipped");
+        }
         return None;
     }
     let start = std::time::Instant::now();
