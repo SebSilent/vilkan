@@ -30,6 +30,7 @@ pub mod fence;
 pub mod frame;
 #[cfg(windows)]
 mod host;
+mod hostpool;
 #[cfg(windows)]
 mod indirect;
 pub mod list;

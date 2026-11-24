@@ -164,13 +164,64 @@ struct Pipeline {
     shaders: Vec<Arc<Shader>>,
     /// Whether a list has bound it yet (its shaders are logged then).
     bound: std::sync::atomic::AtomicBool,
-    /// The rest of a stream's graphics state, for the host pipeline.
+    /// The rest of a stream's graphics state, for the host pipeline. Shared
+    /// (`Arc`) so the background compilation job can hold it too.
     #[cfg(windows)]
-    graphics: Option<Box<host::GraphicsState>>,
+    graphics: Option<Arc<host::GraphicsState>>,
+    /// The host pipeline, compiled on the background pool from creation.
     #[cfg(windows)]
-    host: OnceLock<Option<host::HostPipeline>>,
+    host: Arc<HostSlot>,
 }
 const _: () = assert!(offset_of!(Pipeline, packet) == 0x10);
+
+/// The completion state of a background host compilation. The result lives
+/// in a `OnceLock` so a bind can hold a stable `&HostPipeline`; the condvar
+/// only signals completion (the lock is never held across the wait).
+#[cfg(windows)]
+pub(crate) struct HostSlot {
+    result: OnceLock<Option<host::HostPipeline>>,
+    done: std::sync::Condvar,
+    /// Held only to pair with `done`; the value is unused.
+    lock: std::sync::Mutex<()>,
+}
+
+#[cfg(windows)]
+impl HostSlot {
+    fn new() -> Self {
+        Self {
+            result: OnceLock::new(),
+            done: std::sync::Condvar::new(),
+            lock: std::sync::Mutex::new(()),
+        }
+    }
+
+    /// Store the compilation result (success or refusal) and wake waiters.
+    fn complete(&self, h: Option<host::HostPipeline>) {
+        let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = self.result.set(h);
+        self.done.notify_all();
+    }
+
+    /// The result if compilation has finished, without waiting.
+    fn ready(&self) -> Option<Option<&host::HostPipeline>> {
+        self.result.get().map(|h| h.as_ref())
+    }
+
+    /// Wait up to `bound` for completion. `Some(result)` when done (the
+    /// inner `Option` is the refusal path), `None` on timeout (still
+    /// compiling — the caller counts a residual skip, work continues).
+    fn wait(&self, bound: std::time::Duration) -> Option<Option<&host::HostPipeline>> {
+        if let Some(h) = self.result.get() {
+            return Some(h.as_ref());
+        }
+        let g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let (_g, _timeout) = self
+            .done
+            .wait_timeout_while(g, bound, |_| self.result.get().is_none())
+            .unwrap_or_else(|e| e.into_inner());
+        self.result.get().map(|h| h.as_ref())
+    }
+}
 
 /// Stage names, in description order.
 const GRAPHICS_STAGES: [&str; 5] = ["vertex", "pixel", "domain", "hull", "geometry"];
@@ -226,6 +277,9 @@ mod first_use_budget {
 
     const CAPACITY: Duration = Duration::from_secs(1);
     const REFILL_PER_SEC: f64 = 0.25;
+    /// A single bind never waits longer than this, so one slow compilation
+    /// cannot sleep a Subrender worker toward the hang watchdog.
+    const PER_WAIT_CAP: Duration = Duration::from_millis(250);
     // (available time, last refill instant); lazily started on first use.
     static BUCKET: Mutex<Option<(Duration, Instant)>> = Mutex::new(None);
 
@@ -236,15 +290,17 @@ mod first_use_budget {
         state.1 = now;
     }
 
-    /// Whether any compilation time is left.
-    pub fn available() -> bool {
+    /// The bound on THIS bind's inline wait: the available budget, capped
+    /// per wait. This bounds the wait only — compilation itself always runs
+    /// on the background pool regardless of the bucket (five-star semantics).
+    pub fn wait_bound() -> Duration {
         let mut g = BUCKET.lock().unwrap_or_else(|e| e.into_inner());
         let state = g.get_or_insert((CAPACITY, Instant::now()));
         refill(state);
-        state.0 > Duration::ZERO
+        state.0.min(PER_WAIT_CAP)
     }
 
-    /// Charge `elapsed` compilation time to the bucket.
+    /// Charge `elapsed` inline-wait time to the bucket.
     pub fn spend(elapsed: Duration) {
         let mut g = BUCKET.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(state) = g.as_mut() {
@@ -254,50 +310,58 @@ mod first_use_budget {
     }
 }
 
-/// First-use compilations skipped because the budget was empty (work
-/// dropped, no stand-in). Distinct from genuine refusals so a budget-skip
-/// run cannot pass acceptance by silently doing less.
+/// Residual first-use binds whose background compilation had not finished
+/// within the inline-wait bound. The work is dropped THIS bind only (no
+/// stand-in); compilation continues on the pool and the next bind finds it
+/// ready. Distinct from genuine refusals so it cannot mask them. With
+/// compilation kicked at creation this should be ~0.
 #[cfg(windows)]
 static BUDGET_SKIPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Total budget-skipped first uses so far.
+/// Total residual inline-wait timeouts so far.
 #[cfg(windows)]
 pub(crate) fn budget_skips() -> u64 {
     BUDGET_SKIPS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// The host pipeline of a title pipeline, made on first use; `None` if one
-/// of its shaders does not translate or the host refuses it.
+/// The host pipeline of a title pipeline. Compilation is kicked on the
+/// background pool at creation (`hand_out`); here we wait only on the
+/// in-flight result, bounded by the time budget (five-star semantics — the
+/// budget bounds the inline WAIT, never licences skipping compilation).
+/// `None` if a shader does not translate or the host refuses it (the
+/// refusal path), or — counted as a residual skip — if the bound expires
+/// before the background result lands.
 #[cfg(windows)]
 pub(crate) fn host_pipeline<'a>(this: This) -> Option<&'a host::HostPipeline> {
     if this.is_null() {
         return None;
     }
     let p = pipeline(this);
-    // Already compiled: no budget cost, never blocks.
-    if let Some(h) = p.host.get() {
-        return h.as_ref();
+    // Already compiled (the common case by bind time): no wait, no cost.
+    if let Some(h) = p.host.ready() {
+        return h;
     }
-    // First use: budget the synchronous host compilation so the Subrender
-    // workers never sleep past the hang watchdog. When the bucket is empty,
-    // skip (the pipeline compiles on a later bind once it refills).
-    if !first_use_budget::available() {
-        // Explicit, counted skip — NOT a genuine refusal. The caller drops
-        // this draw/dispatch (no stand-in), so this trades the stall for
-        // missing work; it is a placeholder pending background compilation
-        // (see HANDOUT §6). Counted separately so it cannot mask refusals.
-        let n = BUDGET_SKIPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-        if n % 100 == 1 {
-            tracing::warn!(skips = n, "first-use budget empty: work skipped (no stand-in)");
-        }
-        return None;
-    }
+    // Still compiling: wait only on the in-flight result, bounded.
+    let bound = first_use_budget::wait_bound();
     let start = std::time::Instant::now();
-    let h = p
-        .host
-        .get_or_init(|| host::HostPipeline::new(&p.shaders, p.graphics.as_deref()));
+    let result = p.host.wait(bound);
     first_use_budget::spend(start.elapsed());
-    h.as_ref()
+    match result {
+        Some(h) => h, // done: success or genuine refusal
+        None => {
+            // Bound expired, compilation still in flight. Explicit + counted;
+            // the caller drops this bind's work (no stand-in) but the pool
+            // finishes it, so the next bind is ready — not a permanent skip.
+            let n = BUDGET_SKIPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            if n % 100 == 1 {
+                tracing::warn!(
+                    skips = n,
+                    "inline wait expired: bind deferred, compilation continues"
+                );
+            }
+            None
+        }
+    }
 }
 
 /// The stage's container, if it has one.
@@ -318,6 +382,26 @@ fn hand_out(
     out: *mut This,
 ) -> HRESULT {
     tracing::trace!(?shaders, "pipeline state");
+    #[cfg(windows)]
+    let graphics = graphics.map(Arc::from);
+    #[cfg(windows)]
+    let slot = Arc::new(HostSlot::new());
+    #[cfg(windows)]
+    {
+        // Kick host compilation on the bounded background pool NOW (creation
+        // time), so by bind time the result is usually ready and no Subrender
+        // worker sleeps on a synchronous Create*PipelineState. Inputs are
+        // Send (Arc<Shader>, Arc<GraphicsState>); errors take the refusal
+        // path inside HostPipeline::new, a panic is caught by the pool, and
+        // device loss surfaces as a refused result — never a crash.
+        let job_slot = Arc::clone(&slot);
+        let job_shaders = shaders.clone();
+        let job_graphics = graphics.clone();
+        crate::hostpool::submit(move || {
+            let h = host::HostPipeline::new(&job_shaders, job_graphics.as_deref());
+            job_slot.complete(h);
+        });
+    }
     let pipeline = Box::new(Pipeline {
         object: Object::new(&FUNCTIONS),
         packet: [0; 8],
@@ -326,7 +410,7 @@ fn hand_out(
         #[cfg(windows)]
         graphics,
         #[cfg(windows)]
-        host: OnceLock::new(),
+        host: slot,
     });
     object::hand_out(PIPELINE, pipeline, iid, &PIPELINE_IIDS, out)
 }

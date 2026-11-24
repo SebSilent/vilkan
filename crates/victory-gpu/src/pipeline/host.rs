@@ -48,6 +48,16 @@ pub(crate) struct GraphicsState {
     samples: DXGI_SAMPLE_DESC,
 }
 
+// SAFETY: the only non-Send fields are `inputs[].SemanticName` (PCSTR), and
+// each points into this struct's own `names: Vec<CString>` (built together
+// at construction, host.rs:146-160). A CString's heap buffer is stable when
+// the struct moves, and both `names` and `inputs` are immutable after
+// construction, so sharing/sending the struct keeps every pointer valid and
+// race-free. This lets the background compilation pool hold an
+// `Arc<GraphicsState>`.
+unsafe impl Send for GraphicsState {}
+unsafe impl Sync for GraphicsState {}
+
 impl Default for GraphicsState {
     fn default() -> Self {
         let target = D3D12_RENDER_TARGET_BLEND_DESC {
