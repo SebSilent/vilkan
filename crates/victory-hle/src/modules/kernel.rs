@@ -293,6 +293,33 @@ pub extern "system" fn ExitProcess(code: u32) -> ! {
     host::exit_process(code)
 }
 
+/// The title's memory wait (`WaitOnAddress`): blocks until the value at
+/// `address` differs from `compare`, or `ms` elapses. Logged when it blocks
+/// over a second or times out — a wait nothing ever meets stalls the loading
+/// thread until the game's hang watchdog fires (the 1a crash). Forwards to
+/// the host unchanged; this only names the blocking call.
+pub extern "system" fn WaitOnAddress(
+    address: *const c_void,
+    compare: *const c_void,
+    size: usize,
+    ms: u32,
+) -> i32 {
+    let started = std::time::Instant::now();
+    let r = host::wait_on_address(address, compare, size, ms);
+    let waited = started.elapsed();
+    if waited > std::time::Duration::from_millis(1000) || r == 0 {
+        tracing::warn!(
+            addr = format_args!("{address:p}"),
+            timeout_ms = ms,
+            waited_ms = waited.as_millis(),
+            ok = r,
+            from = %host::callers(),
+            "WaitOnAddress blocked"
+        );
+    }
+    r
+}
+
 /// `ntdll!RtlExitUserProcess` — the path a clean guest quit takes that
 /// kernel32!ExitProcess interception misses. Log the code and the guest
 /// callers (the last guest calls before the quit).
@@ -386,6 +413,7 @@ pub(crate) fn module() -> HleModule {
             "kernel32.dll",
             "kernelbase.dll",
             "ntdll.dll",
+            "api-ms-win-core-synch-*",
             "api-ms-win-core-libraryloader-*",
             "api-ms-win-core-processthreads-*",
             "api-ms-win-core-debug-*",
@@ -412,6 +440,7 @@ pub(crate) fn module() -> HleModule {
             hle_export!(_invalid_parameter_noinfo_noreturn),
             hle_export!(TerminateProcess),
             hle_export!(ExitProcess),
+            hle_export!(WaitOnAddress),
             hle_export!(RtlExitUserProcess),
             hle_export!(NtTerminateProcess),
             hle_export!(ExitThread),
@@ -436,7 +465,7 @@ mod host {
         DisableThreadLibraryCalls, GetModuleFileNameA, GetModuleFileNameW, GetModuleHandleA,
         GetModuleHandleW, GetProcAddress, LoadLibraryExA, LoadLibraryExW,
     };
-    use windows_sys::Win32::System::Threading::{ExitProcess, ExitThread, TerminateProcess};
+    use windows_sys::Win32::System::Threading::{ExitProcess, ExitThread, TerminateProcess, WaitOnAddress};
 
     #[link(name = "ntdll")]
     unsafe extern "system" {
@@ -544,6 +573,16 @@ mod host {
     pub(super) fn exit_thread(code: u32) -> ! {
         // SAFETY: see above.
         unsafe { ExitThread(code) }
+    }
+
+    pub(super) fn wait_on_address(
+        address: *const c_void,
+        compare: *const c_void,
+        size: usize,
+        ms: u32,
+    ) -> i32 {
+        // SAFETY: the title's own arguments, forwarded to the host API.
+        unsafe { WaitOnAddress(address, compare, size, ms) }
     }
 
     pub(super) fn set_unhandled_exception_filter(filter: extern "system" fn(*const c_void) -> i32) {
@@ -655,6 +694,15 @@ mod host {
 
     pub(super) fn exit_thread(code: u32) -> ! {
         std::process::exit(code as i32)
+    }
+
+    pub(super) fn wait_on_address(
+        _address: *const c_void,
+        _compare: *const c_void,
+        _size: usize,
+        _ms: u32,
+    ) -> i32 {
+        1
     }
 
     pub(super) fn set_unhandled_exception_filter(_: extern "system" fn(*const c_void) -> i32) {}
