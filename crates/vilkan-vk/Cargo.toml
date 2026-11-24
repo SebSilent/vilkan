@@ -10,6 +10,17 @@ publish.workspace = true
 [dependencies]
 ash = { version = "0.38", default-features = false, features = ["linked", "std"] }
 anyhow.workspace = true
+# Windowing for the native present example (feature "present").
+ash-window = { version = "0.13", optional = true }
+winit = { version = "0.30", optional = true }
+raw-window-handle = { version = "0.6", optional = true }
+
+[features]
+present = ["dep:ash-window", "dep:winit", "dep:raw-window-handle"]
+
+[[example]]
+name = "present"
+required-features = ["present"]
 
 [lints]
 workspace = true

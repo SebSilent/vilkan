@@ -13,6 +13,8 @@ use ash::vk;
 
 pub mod bindless;
 pub mod graphics;
+#[cfg(feature = "present")]
+pub mod present;
 
 /// The push-constant block: s0..s31, heap base, code base (36 dwords = 144 B).
 pub const PC_BYTES: usize = 144;
@@ -41,8 +43,20 @@ impl Context {
         let app = vk::ApplicationInfo::default()
             .application_name(c"vilkan-vk")
             .api_version(vk::API_VERSION_1_3);
-        let inst_info = vk::InstanceCreateInfo::default().application_info(&app);
-        // SAFETY: valid create info, no dangling pointers.
+        // Enable the surface extensions (for native presentation) when present.
+        // SAFETY: valid entry; enumerates instance extension properties.
+        let avail = unsafe { entry.enumerate_instance_extension_properties(None) }
+            .unwrap_or_default();
+        let has = |name: &std::ffi::CStr| avail.iter().any(|e| e.extension_name_as_c_str() == Ok(name));
+        let mut exts: Vec<*const i8> = Vec::new();
+        for name in [ash::khr::surface::NAME, ash::khr::xlib_surface::NAME,
+                     ash::khr::xcb_surface::NAME, ash::khr::wayland_surface::NAME] {
+            if has(name) { exts.push(name.as_ptr()); }
+        }
+        let inst_info = vk::InstanceCreateInfo::default()
+            .application_info(&app)
+            .enabled_extension_names(&exts);
+        // SAFETY: valid create info; ext pointers are static CStr names.
         let instance = unsafe { entry.create_instance(&inst_info, None) }
             .context("create Vulkan instance (is the loader/driver present?)")?;
 
@@ -117,8 +131,8 @@ impl Context {
         f2.features.shader_sampled_image_array_dynamic_indexing = vk::TRUE;
 
         // shaderDrawParameters (BaseVertex/BaseInstance the translated VS reads)
-        // via the device extension.
-        let exts = [ash::khr::shader_draw_parameters::NAME.as_ptr()];
+        // and swapchain (for native presentation) via device extensions.
+        let exts = [ash::khr::shader_draw_parameters::NAME.as_ptr(), ash::khr::swapchain::NAME.as_ptr()];
         let dev_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&qci)
             .enabled_extension_names(&exts)
@@ -136,6 +150,13 @@ impl Context {
             subgroup_size, device_name, mem_props,
         })
     }
+
+    /// The Vulkan instance (for surface creation in the present path).
+    pub fn instance(&self) -> &ash::Instance { &self.instance }
+    /// The Vulkan entry (for surface creation).
+    pub fn entry(&self) -> &ash::Entry { &self._entry }
+    /// The physical device.
+    pub fn physical_device(&self) -> vk::PhysicalDevice { self.physical }
 
     pub(crate) fn mem_type(&self, type_bits: u32, flags: vk::MemoryPropertyFlags) -> Result<u32> {
         for i in 0..self.mem_props.memory_type_count {

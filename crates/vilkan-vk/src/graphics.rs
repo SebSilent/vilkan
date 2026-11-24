@@ -16,7 +16,7 @@ pub struct RenderTarget<'a> {
     ctx: &'a Context,
     pub width: u32,
     pub height: u32,
-    image: vk::Image,
+    pub(crate) image: vk::Image,
     memory: vk::DeviceMemory,
     view: vk::ImageView,
     render_pass: vk::RenderPass,
