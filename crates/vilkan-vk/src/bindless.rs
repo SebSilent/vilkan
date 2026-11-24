@@ -81,7 +81,7 @@ pub struct BlurSetup<'a> {
 }
 
 impl Context {
-    fn make_buffer(&self, size: usize, usage: vk::BufferUsageFlags, flags: vk::MemoryPropertyFlags)
+    pub(crate) fn make_buffer(&self, size: usize, usage: vk::BufferUsageFlags, flags: vk::MemoryPropertyFlags)
         -> Result<(vk::Buffer, vk::DeviceMemory, *mut u8)>
     {
         let bi = vk::BufferCreateInfo::default().size(size as u64).usage(usage).sharing_mode(vk::SharingMode::EXCLUSIVE);
@@ -104,7 +104,7 @@ impl Context {
         Ok((buffer, memory, ptr))
     }
 
-    fn make_image(&self, format: vk::Format, w: u32, h: u32, usage: vk::ImageUsageFlags)
+    pub(crate) fn make_image(&self, format: vk::Format, w: u32, h: u32, usage: vk::ImageUsageFlags)
         -> Result<(vk::Image, vk::DeviceMemory, vk::ImageView)>
     {
         let ii = vk::ImageCreateInfo::default()

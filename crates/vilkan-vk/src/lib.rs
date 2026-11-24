@@ -12,6 +12,7 @@ use anyhow::{Context as _, Result, bail};
 use ash::vk;
 
 pub mod bindless;
+pub mod graphics;
 
 /// The push-constant block: s0..s31, heap base, code base (36 dwords = 144 B).
 pub const PC_BYTES: usize = 144;
@@ -73,10 +74,13 @@ impl Context {
         unsafe { instance.get_physical_device_properties2(physical, &mut props2) };
         let subgroup_size = sg.subgroup_size;
 
-        // Queue family with compute.
+        // Queue family with graphics + compute (graphics for rasterization,
+        // compute for dispatch); fall back to compute-only.
         // SAFETY: valid physical device.
         let families = unsafe { instance.get_physical_device_queue_family_properties(physical) };
-        let queue_family = families.iter().position(|f| f.queue_flags.contains(vk::QueueFlags::COMPUTE))
+        let queue_family = families.iter()
+            .position(|f| f.queue_flags.contains(vk::QueueFlags::GRAPHICS | vk::QueueFlags::COMPUTE))
+            .or_else(|| families.iter().position(|f| f.queue_flags.contains(vk::QueueFlags::COMPUTE)))
             .context("no compute queue family")? as u32;
         let priority = [1.0f32];
         let qci = [vk::DeviceQueueCreateInfo::default()
@@ -112,8 +116,12 @@ impl Context {
         f2.features.shader_storage_image_array_dynamic_indexing = vk::TRUE;
         f2.features.shader_sampled_image_array_dynamic_indexing = vk::TRUE;
 
+        // shaderDrawParameters (BaseVertex/BaseInstance the translated VS reads)
+        // via the device extension.
+        let exts = [ash::khr::shader_draw_parameters::NAME.as_ptr()];
         let dev_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&qci)
+            .enabled_extension_names(&exts)
             .push_next(&mut f2);
         // SAFETY: valid physical device and create info.
         let device = unsafe { instance.create_device(physical, &dev_info, None) }
