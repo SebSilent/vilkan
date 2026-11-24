@@ -37,6 +37,26 @@ pub struct ViewBuffer {
     pub data_file: String,
 }
 
+/// One vertex input element (backend-neutral): a DXGI format code at an offset
+/// in a bound vertex buffer slot.
+#[derive(Debug, Clone, Deserialize)]
+pub struct VertexInput {
+    pub slot: u32,
+    pub offset: u32,
+    /// DXGI format code (a plain integer, backend-neutral).
+    pub format: u32,
+    #[serde(default)]
+    pub per_instance: bool,
+}
+
+/// A bound vertex buffer's bytes (backend-neutral).
+#[derive(Debug, Clone, Deserialize)]
+pub struct VertexBuffer {
+    pub slot: u32,
+    pub stride: u32,
+    pub data_file: String,
+}
+
 /// A captured render target's format and size.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RenderTarget {
@@ -55,6 +75,12 @@ pub struct DrawRecord {
     pub first_vertex: u32,
     pub roots: Vec<RootBinding>,
     pub view_buffers: Vec<ViewBuffer>,
+    /// Vertex input elements (empty for a VertexIndex-only fullscreen draw).
+    #[serde(default)]
+    pub inputs: Vec<VertexInput>,
+    /// Bound vertex buffers (empty for a VertexIndex-only fullscreen draw).
+    #[serde(default)]
+    pub vertex_buffers: Vec<VertexBuffer>,
     pub targets: Vec<RenderTarget>,
 }
 
@@ -76,8 +102,13 @@ pub struct DrawResources {
     pub vs_spirv: Vec<u8>,
     /// Pixel shader, SPIR-V bytes.
     pub ps_spirv: Vec<u8>,
-    /// Root-view buffer contents, `(console address, bytes)`.
+    /// Root-view buffer contents, `(console address, bytes)`. This also carries
+    /// the descriptor-table window and any constant-buffer window a Table root
+    /// references: the replay places every entry in the heap at its address, so
+    /// a V# -> CBV indirection needs no separate channel.
     pub views: Vec<(u64, Vec<u8>)>,
+    /// Bound vertex buffers, `(slot, stride, bytes)`.
+    pub vertex_buffers: Vec<(u32, u32, Vec<u8>)>,
     /// The D3D12 render-target readback (RGBA8), if captured. The D3D12
     /// reference serves this; the native path ignores it.
     pub oracle_rgba8: Option<Vec<u8>>,
@@ -99,6 +130,11 @@ pub fn load_capture(dir: &Path) -> Result<(DrawRecord, DrawResources)> {
         let data = std::fs::read(dir.join(&vb.data_file))
             .with_context(|| format!("read view buffer {}", vb.data_file))?;
         res.views.push((vb.address, data));
+    }
+    for vb in &record.vertex_buffers {
+        let data = std::fs::read(dir.join(&vb.data_file))
+            .with_context(|| format!("read vertex buffer {}", vb.data_file))?;
+        res.vertex_buffers.push((vb.slot, vb.stride, data));
     }
     // The oracle is optional: the native path does not need it.
     if let Ok(oracle) = std::fs::read(dir.join("oracle.bin")) {

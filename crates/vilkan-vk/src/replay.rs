@@ -19,7 +19,8 @@ use crate::Context;
 // `vilkan-host` (the host-trait seam). Re-exported here so existing callers
 // (`vilkan_vk::replay::{DrawRecord, Fault, ...}`) keep working unchanged.
 pub use vilkan_host::{
-    DrawRecord, DrawResources, Fault, ReplayResult, RenderTarget, RootBinding, ViewBuffer,
+    DrawRecord, DrawResources, Fault, ReplayResult, RenderTarget, RootBinding, VertexBuffer,
+    VertexInput, ViewBuffer,
 };
 
 /// Replay a captured draw from a folder: SPIR-V VS/PS, root-view buffers in the
@@ -53,9 +54,16 @@ pub fn replay_record(
     }
     let heap_size = (heap_end.max(1 << 20)) as usize;
     let heap = ctx.heap(heap_size)?;
+    // A Table root's window is a descriptor (a V# pointer), not view data:
+    // corrupting its base address would make the shader's physical-storage-buffer
+    // load wild (a device-lost, not a wrong pixel). CorruptViewBuffer perturbs the
+    // data buffers (the constant buffer the V# references), leaving descriptors
+    // intact, so the fault changes pixels gracefully.
+    let table_addrs: Vec<u64> = rec.roots.iter()
+        .filter(|r| r.kind == "Table").filter_map(|r| r.address).collect();
     for (address, data) in &res.views {
         let mut data = data.clone();
-        if fault == Fault::CorruptViewBuffer {
+        if fault == Fault::CorruptViewBuffer && !table_addrs.contains(address) {
             for b in data.iter_mut() {
                 *b = b.wrapping_mul(31).wrapping_add(17);
             }
@@ -68,15 +76,16 @@ pub fn replay_record(
     // compared against the RGBA8 oracle with a stated tolerance.
     let rt = crate::graphics::RenderTarget::new(ctx, target.width, target.height)?;
 
-    // Push constants: s0..s31 + heap base. The root view address goes in s8/s9
-    // (the VS builds its buffer V# from there); the heap base at offset 128.
+    // Push constants: s0..s31 + heap base. A root View or Table address goes in
+    // s8/s9 (the shader loads its V# from there: the VS for a View, the PS for a
+    // Table -> CBV indirection); the heap base at offset 128.
     let mut pc = [0u32; 36];
     for r in &rec.roots {
-        if r.kind == "View"
+        if (r.kind == "View" || r.kind == "Table")
             && let Some(a) = r.address
         {
             if fault == Fault::WrongPushConstants {
-                // Wrong SGPRs: the VS reads s8/s9, so s4/s5 leaves it zero.
+                // Wrong SGPRs: the shader reads s8/s9, so s4/s5 leaves it zero.
                 pc[4] = a as u32;
                 pc[5] = (a >> 32) as u32;
             } else {
@@ -91,6 +100,19 @@ pub fn replay_record(
     let words = if fault == Fault::SkipDraw {
         // No draw: read back the cleared target.
         rt.clear_and_readback([0.0, 0.0, 0.0, 0.0])?
+    } else if let Some((slot, stride, vb)) = res.vertex_buffers.first() {
+        // A vertex-buffer draw (the colour quad): build the input layout from the
+        // record's elements and draw vertex_count vertices from the bound buffer.
+        let mut attributes = Vec::new();
+        for (loc, e) in rec.inputs.iter().enumerate() {
+            if e.slot != *slot {
+                continue;
+            }
+            attributes.push((loc as u32, e.offset, crate::graphics::dxgi_vertex_format(e.format)?));
+        }
+        let layout = crate::graphics::VertexLayout { stride: *stride, attributes };
+        rt.draw_vertices(&res.vs_spirv, &res.ps_spirv, [0.0, 0.0, 0.0, 0.0],
+            &[], vk::DescriptorSet::null(), &pc, &layout, vb, rec.vertex_count)?
     } else {
         rt.draw_with_set(&res.vs_spirv, &res.ps_spirv, [0.0, 0.0, 0.0, 0.0], &[], vk::DescriptorSet::null(), &pc)?
     };

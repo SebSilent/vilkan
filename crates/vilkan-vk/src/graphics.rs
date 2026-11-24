@@ -11,6 +11,27 @@ use ash::vk;
 
 use crate::Context;
 
+/// A vertex input layout: the binding stride and the (location, offset, format)
+/// attributes, backend-neutral except for the resolved Vulkan format.
+pub struct VertexLayout {
+    pub stride: u32,
+    pub attributes: Vec<(u32, u32, vk::Format)>,
+}
+
+/// Map a DXGI format code (the capture's plain integer) to a Vulkan vertex
+/// format. Only the codes the captured draws use are mapped; an unknown code is
+/// an error, not a silent guess. Missing components are filled by Vulkan
+/// (w=1 for a float input), matching the console input-assembly behaviour.
+pub fn dxgi_vertex_format(code: u32) -> Result<vk::Format> {
+    Ok(match code {
+        2 => vk::Format::R32G32B32A32_SFLOAT,   // R32G32B32A32_FLOAT
+        6 => vk::Format::R32G32B32_SFLOAT,      // R32G32B32_FLOAT
+        16 => vk::Format::R32G32_SFLOAT,        // R32G32_FLOAT
+        28 => vk::Format::R8G8B8A8_UNORM,       // R8G8B8A8_UNORM
+        _ => bail!("unsupported DXGI vertex format {code}"),
+    })
+}
+
 /// A render target with a render pass and framebuffer, plus readback.
 pub struct RenderTarget<'a> {
     ctx: &'a Context,
@@ -101,9 +122,52 @@ impl<'a> RenderTarget<'a> {
     pub fn draw_with_set(&self, vs_spv: &[u8], ps_spv: &[u8], clear: [f32; 4],
                          set_layouts: &[vk::DescriptorSetLayout], set: vk::DescriptorSet,
                          pc: &[u32; 36]) -> Result<Vec<u32>> {
+        self.draw_core(vs_spv, ps_spv, clear, set_layouts, set, pc, None, 3)
+    }
+
+    /// Draw `vertex_count` vertices from a bound vertex buffer (the colour-quad
+    /// path: the VS reads vertex attributes, not VertexIndex). `layout` gives the
+    /// binding stride and the (location, offset, format) attributes; `vb` is the
+    /// buffer bytes. Everything else matches [`Self::draw_with_set`].
+    pub fn draw_vertices(&self, vs_spv: &[u8], ps_spv: &[u8], clear: [f32; 4],
+                         set_layouts: &[vk::DescriptorSetLayout], set: vk::DescriptorSet,
+                         pc: &[u32; 36], layout: &VertexLayout, vb: &[u8],
+                         vertex_count: u32) -> Result<Vec<u32>> {
+        self.draw_core(vs_spv, ps_spv, clear, set_layouts, set, pc, Some((layout, vb)), vertex_count)
+    }
+
+    fn draw_core(&self, vs_spv: &[u8], ps_spv: &[u8], clear: [f32; 4],
+                 set_layouts: &[vk::DescriptorSetLayout], set: vk::DescriptorSet,
+                 pc: &[u32; 36], vertex: Option<(&VertexLayout, &[u8])>,
+                 vertex_count: u32) -> Result<Vec<u32>> {
         let dev = &self.ctx.device;
         let vs = self.module(vs_spv)?;
         let ps = self.module(ps_spv)?;
+
+        // Vertex input: none for the VertexIndex fullscreen path; a binding +
+        // attributes for a vertex-buffer draw.
+        let binding = vertex.map(|(l, _)| vk::VertexInputBindingDescription::default()
+            .binding(0).stride(l.stride).input_rate(vk::VertexInputRate::VERTEX));
+        let attrs: Vec<vk::VertexInputAttributeDescription> = vertex.map(|(l, _)| l.attributes.iter()
+            .map(|&(loc, off, fmt)| vk::VertexInputAttributeDescription::default()
+                .location(loc).binding(0).format(fmt).offset(off)).collect()).unwrap_or_default();
+        let mut vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
+        if let Some(b) = &binding {
+            vertex_input = vertex_input.vertex_binding_descriptions(std::slice::from_ref(b))
+                .vertex_attribute_descriptions(&attrs);
+        }
+        // Upload the vertex buffer (host-visible, device-local not required for a
+        // one-shot draw) and keep it alive until the draw completes.
+        let vb_upload = if let Some((_, bytes)) = vertex {
+            let (buf, mem, ptr) = self.ctx.make_buffer(bytes.len().max(4),
+                vk::BufferUsageFlags::VERTEX_BUFFER,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT)?;
+            // SAFETY: host-visible, bytes.len() valid (buffer >= bytes.len()).
+            unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len()) };
+            Some((buf, mem))
+        } else {
+            None
+        };
 
         let pc_range = vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::ALL_GRAPHICS)
@@ -118,8 +182,6 @@ impl<'a> RenderTarget<'a> {
             vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::VERTEX).module(vs).name(c"main"),
             vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::FRAGMENT).module(ps).name(c"main"),
         ];
-        // No vertex input: the VS reads VertexIndex.
-        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
         let viewport = vk::Viewport { x: 0.0, y: 0.0, width: self.width as f32, height: self.height as f32, min_depth: 0.0, max_depth: 1.0 };
@@ -168,11 +230,16 @@ impl<'a> RenderTarget<'a> {
                 // SAFETY: valid command buffer/layout/set.
                 unsafe { dev.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::GRAPHICS, layout, 0, std::slice::from_ref(&set), &[]) };
             }
+            if let Some((buf, _)) = vb_upload {
+                // SAFETY: valid command buffer/buffer; binding 0 matches the layout.
+                unsafe { dev.cmd_bind_vertex_buffers(cmd, 0, std::slice::from_ref(&buf), &[0]) };
+            }
             let pc_bytes: &[u8] = unsafe { std::slice::from_raw_parts(pc.as_ptr() as *const u8, crate::PC_BYTES) };
             // SAFETY: valid command buffer/layout, pc bytes live.
             unsafe { dev.cmd_push_constants(cmd, layout, vk::ShaderStageFlags::ALL_GRAPHICS, 0, pc_bytes) };
-            // SAFETY: valid command buffer; 3 vertices from VertexIndex.
-            unsafe { dev.cmd_draw(cmd, 3, 1, 0, 0) };
+            // SAFETY: valid command buffer; vertex_count verts (3 from VertexIndex
+            // for the fullscreen path, or the bound buffer's vertex count).
+            unsafe { dev.cmd_draw(cmd, vertex_count, 1, 0, 0) };
             // SAFETY: valid command buffer.
             unsafe { dev.cmd_end_render_pass(cmd) };
             Ok(())
@@ -180,6 +247,10 @@ impl<'a> RenderTarget<'a> {
 
         // SAFETY: pipeline/layout/modules owned here.
         unsafe { dev.destroy_pipeline(pipeline, None); dev.destroy_pipeline_layout(layout, None); dev.destroy_shader_module(vs, None); dev.destroy_shader_module(ps, None) };
+        if let Some((buf, mem)) = vb_upload {
+            // SAFETY: vertex buffer/memory owned here, draw completed (one_shot waits).
+            unsafe { dev.destroy_buffer(buf, None); dev.free_memory(mem, None) };
+        }
         self.readback()
     }
 

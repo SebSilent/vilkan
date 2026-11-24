@@ -820,13 +820,21 @@ impl State {
         if p.compute || p.mesh {
             return;
         }
-        // Minimal capture: only the descriptor-table-free root-view draw (the
-        // fullscreen pass). It needs no bindless set, so the replay can consume
-        // it directly, and capturing one draw per frame keeps the readback
+        // Default capture: the descriptor-table-free root-view draw (the
+        // fullscreen pass), which needs no bindless set. With
+        // VILKAN_DRAW_CAPTURE_TABLE set, also capture a Table-root draw (the
+        // colour quad): its descriptor-table window and the constant buffer the
+        // table's V# references are captured as view buffers, so the replay can
+        // place them in its heap. Capturing one draw per frame keeps the readback
         // stalls small enough not to trip the title's GPU watchdog early.
+        let capture_table = std::env::var_os("VILKAN_DRAW_CAPTURE_TABLE").is_some();
         let has_view = self.graphics.iter().any(|r| matches!(r, Root::View(a) if *a != 0));
-        let has_table = self.graphics.iter().any(|r| matches!(r, Root::Table(_)));
-        if !has_view || has_table {
+        let has_table = self.graphics.iter().any(|r| matches!(r, Root::Table(a) if *a != 0));
+        if capture_table {
+            if !has_table {
+                return;
+            }
+        } else if !has_view || has_table {
             return;
         }
         use crate::drawcap::*;
@@ -883,6 +891,39 @@ impl State {
                 let file = format!("view-{:x}-{}.bin", a, ordinal);
                 let _ = std::fs::write(folder.join(&file), bytes);
                 view_buffers.push(ViewBuffer { address: *a, data_file: file });
+            }
+        }
+        // A Table root points at a descriptor (here a V#: a 4-dword buffer
+        // descriptor). Capture the table window so the replay can place it, then
+        // decode the V# base address (word0 | word1<<32) and capture the constant
+        // buffer it references, so the shader's buffer load resolves. Both go in
+        // as view buffers: the replay places every entry in its heap by address.
+        if capture_table {
+            for r in &self.graphics {
+                if let Root::Table(a) = r {
+                    if *a == 0 {
+                        continue;
+                    }
+                    const TABLE_WINDOW: u64 = 256;
+                    // SAFETY: console memory is unified; the table lies in it.
+                    let tbytes = unsafe { std::slice::from_raw_parts(*a as *const u8, TABLE_WINDOW as usize) };
+                    let file = format!("view-{:x}-{}.bin", a, ordinal);
+                    let _ = std::fs::write(folder.join(&file), tbytes);
+                    view_buffers.push(ViewBuffer { address: *a, data_file: file });
+                    // V# base = first two dwords (little-endian u64).
+                    let base = u64::from(u32::from_le_bytes([tbytes[0], tbytes[1], tbytes[2], tbytes[3]]))
+                        | (u64::from(u32::from_le_bytes([tbytes[4], tbytes[5], tbytes[6], tbytes[7]])) << 32);
+                    // Guard a wild/zero base before reading; the CBV window covers
+                    // the shader's offset (0x20) with margin.
+                    if base != 0 && base < 0x0000_8000_0000_0000 {
+                        const CBV_WINDOW: u64 = 4096;
+                        // SAFETY: base is a sane console address; window bounded.
+                        let cbytes = unsafe { std::slice::from_raw_parts(base as *const u8, CBV_WINDOW as usize) };
+                        let cfile = format!("view-{:x}-{}.bin", base, ordinal);
+                        let _ = std::fs::write(folder.join(&cfile), cbytes);
+                        view_buffers.push(ViewBuffer { address: base, data_file: cfile });
+                    }
+                }
             }
         }
         // The viewport is the render target extent (the title sets it to the
