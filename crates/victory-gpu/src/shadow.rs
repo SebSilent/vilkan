@@ -346,8 +346,8 @@ pub(crate) fn find(address: u64, len: u64) -> Option<Arc<Shadow>> {
     Some(entry.shadow.get_or_insert(shadow).clone())
 }
 
-/// Titles also use memory outside any buffer object as GPU memory (Grand
-/// Theft Auto VI's interface vertices, from its own allocator). Such memory
+/// Titles also use memory outside any buffer object as GPU memory (for
+/// example interface vertices from the title's own allocator). Such memory
 /// gets copies of the aligned windows it touches.
 /// shortcut: copies of windows are never freed; key them to the title's
 /// allocations if memory use grows.
