@@ -76,6 +76,8 @@ pub struct BlurSetup<'a> {
     sampler: vk::Sampler,
     pub input_view: vk::ImageView,
     pub output_views: Vec<vk::ImageView>,
+    pub width: u32,
+    pub height: u32,
 }
 
 impl Context {
@@ -267,9 +269,14 @@ impl<'a> BlurSetup<'a> {
             // V# for the scale-factor buffer load: base = a heap offset holding
             // four float scales (1.0), stride 0, num_records 4, raw.
             let scale_off = TABLE_OFF + 0x200;
-            let scales = [1.0f32, 1.0, 1.0, 1.0];
+            // The shader samples at (pixel + 0.5) * scale: for an 8x8 texture
+            // the scale is 1/8 (texel centres, normalized), and s18 is the LOD
+            // (0 = mip 0). s19 is unused here.
+            let scales = [0.125f32, 0.125, 0.0, 0.0];
             std::ptr::copy_nonoverlapping(scales.as_ptr() as *const u8, hp.add(scale_off), 16);
-            let vsharp = [scale_off as u32, 0, 4, 0x31016FAC];
+            // Raw V# (OOB_SELECT 3): num_records is a BYTE bound, so 4 dwords
+            // need 16, not 4 (else s17/s18/s19 read out of bounds as 0).
+            let vsharp = [scale_off as u32, 0, 16, 0x31016FAC];
             put(0xa0, &vsharp);
         }
 
@@ -294,8 +301,154 @@ impl<'a> BlurSetup<'a> {
         Ok(BlurSetup {
             ctx, set_layout, pool, set, pipeline_layout, heap,
             table_buffer, table_memory, images, memories, views, sampler,
-            input_view, output_views,
+            input_view, output_views, width: w, height: h,
         })
+    }
+}
+
+impl Context {
+    /// Run a one-shot command buffer on the compute queue and wait for it.
+    pub(crate) fn one_shot<F>(&self, f: F) -> Result<()>
+    where F: FnOnce(vk::CommandBuffer) -> Result<()> {
+        let dev = &self.device;
+        let pool_info = vk::CommandPoolCreateInfo::default()
+            .queue_family_index(self.queue_family)
+            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
+        // SAFETY: valid device/queue family.
+        let pool = unsafe { dev.create_command_pool(&pool_info, None) }?;
+        let ai = vk::CommandBufferAllocateInfo::default()
+            .command_pool(pool).level(vk::CommandBufferLevel::PRIMARY).command_buffer_count(1);
+        // SAFETY: valid pool.
+        let cmd = unsafe { dev.allocate_command_buffers(&ai) }?[0];
+        let bi = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        // SAFETY: valid command buffer.
+        unsafe { dev.begin_command_buffer(cmd, &bi) }?;
+        f(cmd)?;
+        // SAFETY: valid command buffer.
+        unsafe { dev.end_command_buffer(cmd) }?;
+        let cmds = [cmd];
+        let si = vk::SubmitInfo::default().command_buffers(&cmds);
+        // SAFETY: valid queue/command buffer.
+        unsafe { dev.queue_submit(self.queue, &[si], vk::Fence::null()) }?;
+        // SAFETY: valid queue.
+        unsafe { dev.queue_wait_idle(self.queue) }?;
+        // SAFETY: valid pool.
+        unsafe { dev.destroy_command_pool(pool, None) };
+        Ok(())
+    }
+}
+
+impl<'a> BlurSetup<'a> {
+    /// Upload RGBA8 texels into the input texture (row-major, w*h words).
+    pub fn upload_input(&self, texels: &[u32]) -> Result<()> {
+        let dev = &self.ctx.device;
+        let bytes = texels.len() * 4;
+        let (stage, stage_mem, ptr) = self.ctx.make_buffer(bytes,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT)?;
+        // SAFETY: host-visible, bytes valid.
+        unsafe { std::ptr::copy_nonoverlapping(texels.as_ptr() as *const u8, ptr, bytes) };
+        let input_image = self.images[0];
+        self.ctx.one_shot(|cmd| {
+            let to_transfer = vk::ImageMemoryBarrier::default()
+                .old_layout(vk::ImageLayout::UNDEFINED).new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                .image(input_image)
+                .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 })
+                .src_access_mask(vk::AccessFlags::empty()).dst_access_mask(vk::AccessFlags::TRANSFER_WRITE);
+            // SAFETY: valid command buffer/barrier.
+            unsafe { dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::TRANSFER, vk::DependencyFlags::empty(), &[], &[], &[to_transfer]) };
+            let region = vk::BufferImageCopy::default()
+                .image_subresource(vk::ImageSubresourceLayers { aspect_mask: vk::ImageAspectFlags::COLOR, mip_level: 0, base_array_layer: 0, layer_count: 1 })
+                .image_extent(vk::Extent3D { width: self.width, height: self.height, depth: 1 });
+            // SAFETY: valid command buffer/buffer/image.
+            unsafe { dev.cmd_copy_buffer_to_image(cmd, stage, input_image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[region]) };
+            let to_read = vk::ImageMemoryBarrier::default()
+                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL).new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image(input_image)
+                .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 })
+                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE).dst_access_mask(vk::AccessFlags::SHADER_READ);
+            // SAFETY: valid command buffer/barrier.
+            unsafe { dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[], &[], &[to_read]) };
+            Ok(())
+        })?;
+        // SAFETY: staging buffer/memory owned here.
+        unsafe { dev.destroy_buffer(stage, None); dev.free_memory(stage_mem, None) };
+        Ok(())
+    }
+
+    /// Dispatch the blur SPIR-V over `groups` workgroups.
+    pub fn dispatch(&self, spirv: &[u8], groups: [u32; 3]) -> Result<()> {
+        let dev = &self.ctx.device;
+        let words: Vec<u32> = spirv.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+        let smi = vk::ShaderModuleCreateInfo::default().code(&words);
+        // SAFETY: valid device/code.
+        let module = unsafe { dev.create_shader_module(&smi, None) }?;
+        let stage = vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::COMPUTE).module(module).name(c"main");
+        let cpi = vk::ComputePipelineCreateInfo::default().stage(stage).layout(self.pipeline_layout);
+        // SAFETY: valid device/layout/stage.
+        let pipeline = unsafe { dev.create_compute_pipelines(vk::PipelineCache::null(), &[cpi], None) }
+            .map_err(|e| anyhow::anyhow!("create blur pipeline: {:?}", e.1))?[0];
+        // Output images to GENERAL for storage writes.
+        let out_barriers: Vec<vk::ImageMemoryBarrier> = self.images[1..].iter().map(|&img| {
+            vk::ImageMemoryBarrier::default()
+                .old_layout(vk::ImageLayout::UNDEFINED).new_layout(vk::ImageLayout::GENERAL)
+                .image(img)
+                .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 })
+                .src_access_mask(vk::AccessFlags::empty()).dst_access_mask(vk::AccessFlags::SHADER_WRITE)
+        }).collect();
+        self.ctx.one_shot(|cmd| {
+            // SAFETY: valid command buffer/barriers.
+            unsafe { dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[], &[], &out_barriers) };
+            // SAFETY: valid command buffer/pipeline.
+            unsafe { dev.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, pipeline) };
+            let sets = [self.set];
+            // SAFETY: valid command buffer/layout/set.
+            unsafe { dev.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline_layout, 0, &sets, &[]) };
+            // Push constants: s[4:5] = descriptor table VA; heap base at 32/33.
+            let mut pc = [0u32; 36];
+            pc[4] = TABLE_OFF as u32; pc[5] = 0;
+            pc[32] = self.heap.address as u32; pc[33] = (self.heap.address >> 32) as u32;
+            let pc_bytes: &[u8] = unsafe { std::slice::from_raw_parts(pc.as_ptr() as *const u8, crate::PC_BYTES) };
+            // SAFETY: valid command buffer/layout, pc bytes live.
+            unsafe { dev.cmd_push_constants(cmd, self.pipeline_layout, vk::ShaderStageFlags::COMPUTE, 0, pc_bytes) };
+            // SAFETY: valid command buffer.
+            unsafe { dev.cmd_dispatch(cmd, groups[0], groups[1], groups[2]) };
+            Ok(())
+        })?;
+        // SAFETY: module/pipeline owned here.
+        unsafe { dev.destroy_pipeline(pipeline, None); dev.destroy_shader_module(module, None) };
+        Ok(())
+    }
+
+    /// Read output UAV `idx` back as RGBA8 texels (row-major).
+    pub fn read_output(&self, idx: usize) -> Result<Vec<u32>> {
+        let dev = &self.ctx.device;
+        let img = self.images[1 + idx];
+        let n = (self.width * self.height) as usize;
+        let (readback, rb_mem, ptr) = self.ctx.make_buffer(n * 4,
+            vk::BufferUsageFlags::TRANSFER_DST,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT)?;
+        self.ctx.one_shot(|cmd| {
+            let to_transfer = vk::ImageMemoryBarrier::default()
+                .old_layout(vk::ImageLayout::GENERAL).new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                .image(img)
+                .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 })
+                .src_access_mask(vk::AccessFlags::SHADER_WRITE).dst_access_mask(vk::AccessFlags::TRANSFER_READ);
+            // SAFETY: valid command buffer/barrier.
+            unsafe { dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::TRANSFER, vk::DependencyFlags::empty(), &[], &[], &[to_transfer]) };
+            let region = vk::BufferImageCopy::default()
+                .image_subresource(vk::ImageSubresourceLayers { aspect_mask: vk::ImageAspectFlags::COLOR, mip_level: 0, base_array_layer: 0, layer_count: 1 })
+                .image_extent(vk::Extent3D { width: self.width, height: self.height, depth: 1 });
+            // SAFETY: valid command buffer/image/buffer.
+            unsafe { dev.cmd_copy_image_to_buffer(cmd, img, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, readback, &[region]) };
+            Ok(())
+        })?;
+        // SAFETY: host-visible, n words.
+        let out = unsafe { std::slice::from_raw_parts(ptr as *const u32, n) }.to_vec();
+        // SAFETY: readback buffer/memory owned here.
+        unsafe { dev.destroy_buffer(readback, None); dev.free_memory(rb_mem, None) };
+        Ok(out)
     }
 }
 

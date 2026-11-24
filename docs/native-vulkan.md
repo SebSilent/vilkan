@@ -51,17 +51,25 @@ size is logged at device creation.
   `spirv-val`. Fixtures come from `VILKAN_VK_FIXTURES` and skip when unset.
 - **Done:** both captured blur shaders compile to validated wave64-emulated
   SPIR-V (zero subgroup ops, LocalSize 8×8×1), from the real header metadata.
-- **Blur dispatch — tractable, not a fundamental wall:** the blur shaders
+- **Done: blur dispatch with a minimal crafted bindless set.** The blur shaders
   sample a texture and write UAV images through a **bindless descriptor heap**
   (runtime arrays of sampled images, samplers and storage images at set 0,
-  indexed by an FNV-1a descriptor hash table over the T#/S# keys). The
-  reference Vulkan test harness already binds sampled images/samplers this way
-  and crafts the heap contents itself. For a test dispatch we control the heap,
-  so a **minimal crafted setup** suffices — a small fixed bindless set
-  (bindings 0/1/2/8/9/10), a hand-built hash-table buffer, crafted T#/S# keys,
-  an input texture + sampler + output UAVs — not a full descriptor runtime.
-  The blurs use 1 sampled image, 1 sampler, 4 storage images, 1 buffer. This is
-  the next step (details in the local note).
+  indexed by an FNV-1a descriptor hash table over the T#/S# keys). For a test
+  dispatch we control the heap, so a **minimal crafted setup** suffices — a
+  small fixed bindless set (bindings 0/1/2/8/9/10), a hand-built hash-table
+  buffer, crafted T#/S# keys with valid FORMAT fields, an input texture +
+  sampler + output UAVs — not a full descriptor runtime
+  (`crates/vilkan-vk/src/bindless.rs`).
+- **Done: numeric box-filter acceptance.** The blur is a mip-chain downsample
+  (8×8 → 4×4 → 2×2 → 1×1). Dispatched against analytically known inputs and
+  checked numerically (`crates/vilkan-vk/tests/blur.rs`): a **constant** image
+  is a fixed point (1×1 average and 8×8 raw all equal the constant); an
+  **impulse** averages to peak/64 with energy conserved; a **gradient** averages
+  to its mean and stays monotonic in the mip. Both blurs pass. A wrong slot
+  index, stale parity or wrong descriptor fails the check. Two setup bugs were
+  caught and fixed this way: the sample-coordinate scale (1/8 for an 8×8
+  texture, not 1.0) and the scale-buffer V# byte bound (16, not 4 — a raw V#'s
+  num_records is bytes, so 4 truncated the Y scale to 0).
 
 The black-world indirect-draw/mesh-shader gap is a separate blocker and is not
 chased here.

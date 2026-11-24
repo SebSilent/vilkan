@@ -80,6 +80,8 @@
 *.7z
 *.rar
 
+scripts/scrub-map.local.py
+
 # Python bytecode (the compiler sidecar is .py)
 __pycache__/
 *.pyc

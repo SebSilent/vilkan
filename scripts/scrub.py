@@ -22,35 +22,17 @@ from pathlib import Path
 
 # Explicit, ordered mapping. Longer phrases first so they win over substrings.
 # Each replacement must not re-match a later rule (idempotence).
-LITERAL = [
-    ("Grand Theft Auto VI", "Cuck Simulator Miami"),
-    ("Grand Theft Auto", "Cuck Simulator Miami"),
-    ("GTA VI", "CSM"),
-    ("GTA6", "CSM"),
-    ("Minecraft (March 2022)", "an older title"),
-    ("Minecraft", "an older title"),
-    ("Fortnite", "another title"),
-    ("Unicorn Overlord", "another title"),
-    ("XDefiant", "another title"),
-    ("Rockstar Games", "the publisher"),
-    ("Rockstar", "the publisher"),
-    ("Take-Two Interactive", "the publisher"),
-    ("Take-Two", "the publisher"),
-    ("CYBERLEEK", "a scene release"),
-    ("Vice City", "the setting"),
-    ("game_scarlett_master.exe", "the title executable"),
-    ("game_scarlett_master", "the title executable"),
-]
+# The identifying strings live in an untracked local mapping (gitignored), so
+# nothing identifying is tracked. A clean clone without it scrubs nothing.
+import importlib.util as _ilu
+_map_path = Path(__file__).with_name("scrub-map.local.py")
+LITERAL, REGEX = [], []
+if _map_path.exists():
+    _spec = _ilu.spec_from_file_location("scrub_map", _map_path)
+    _m = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_m)
+    LITERAL, REGEX = _m.LITERAL, _m.REGEX
 # Regex rules: title-specific code offsets and release/signature dates.
-REGEX = [
-    # Line-wrapped title name across a comment prefix ("Grand Theft\n/// Auto VI").
-    (re.compile(r"Grand Theft[\s/]+Auto(?:[\s/]+VI)?"), "Cuck Simulator Miami"),
-    (re.compile(r"title\+0x[0-9a-fA-F]+"), "a title offset"),
-    (re.compile(r"\(title\+0x[0-9a-fA-F]+[^)]*\)"), "(a title offset)"),
-    (re.compile(r"\(20\d\d-\d\d-\d\d\)"), ""),
-    (re.compile(r"\((?:April|March|May|June|July|August|September|October|November|December|January|February) 20\d\d\)"), ""),
-    (re.compile(r"\b1\.0\.2\.1\b"), "the supported build"),
-]
 TEXT_EXT = {".rs", ".toml", ".md", ".sh", ".py", ".bat", ".txt"}
 
 
