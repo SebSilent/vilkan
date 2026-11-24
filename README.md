@@ -87,12 +87,16 @@ bridges our `VILKAN_*` vars to the upstream `VICTORY_*` config the binary reads.
 Without a title it exits with a clear message; nothing is bundled.
 
 ```bash
-# 3. Native Vulkan compute (needs a Vulkan driver + fixtures; translator vendored).
+# 3. Native Vulkan compute (needs a Vulkan driver; translator vendored).
 cargo build -p vilkan-vk
+# Build the synthetic cross-half fixtures (wave64-emulated) and run the dispatch
+# tests — no game data needed:
+python3 scripts/build-fixtures.py /tmp/fixtures
+VILKAN_VK_FIXTURES=/tmp/fixtures/spirv cargo test -p vilkan-vk --test dispatch
 # Compile a captured shader to SPIR-V with the vendored translator (default):
 python3 scripts/compile-native.py <blob> <out>      # TRANSLATOR_DIR overrides
-# Run the numeric dispatch tests against compiled fixtures:
-VILKAN_VK_FIXTURES=/path/to/spirv cargo test -p vilkan-vk
+# Blur tests need the game-derived blur SPIR-V in the fixture dir:
+VILKAN_VK_FIXTURES=/path/to/spirv cargo test -p vilkan-vk --test blur
 ```
 
 The compile step uses the vendored translator by default (`TRANSLATOR_DIR`
