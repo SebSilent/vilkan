@@ -83,6 +83,31 @@ fn fullscreen_triangle_gradient_is_exact() {
     eprintln!("fullscreen gradient: 4096 pixels, max err {max_err:.2e} ✓");
 }
 
+/// The simplest real title pair: vs_fstriangle (a fullscreen triangle from
+/// VertexIndex) + PS_OutputZeroes (outputs RGBA = 0). With a white clear, every
+/// covered pixel must be the shader's known output (0,0,0,0) and differ from the
+/// clear colour. Fixtures from VILKAN_VK_FIXTURES; skips when absent.
+#[test]
+fn real_pair_output_zeroes_covers_screen() {
+    let Some(vs) = fixture("vs_fstriangle.spv") else { return };
+    let Some(ps) = fixture("ps_zero.spv") else { return };
+    let Some(ctx) = context() else { return };
+    let Some(rt) = RenderTarget::new(&ctx, 32, 32).ok() else { return };
+    let clear = [1.0f32, 1.0, 1.0, 1.0]; // white — must differ from the output
+    let Some(px) = rt.draw_and_readback(&vs, &ps, clear).ok() else { return };
+    assert_eq!(px.len(), 32 * 32 * 4);
+    let mut covered = 0;
+    for p in 0..32 * 32 {
+        let rgba = [f32_at(&px, p * 4), f32_at(&px, p * 4 + 1), f32_at(&px, p * 4 + 2), f32_at(&px, p * 4 + 3)];
+        // The PS outputs zeroes; the fullscreen triangle covers every pixel.
+        assert!(rgba.iter().all(|&c| c.abs() < 1e-6), "pixel {p}: {rgba:?} != PS output (0,0,0,0)");
+        assert!(rgba != clear, "pixel {p} equals the clear colour (not covered?)");
+        covered += 1;
+    }
+    assert_eq!(covered, 32 * 32, "fullscreen triangle must cover every pixel");
+    eprintln!("real pair: {covered} pixels = PS output (0,0,0,0), differ from white clear ✓");
+}
+
 /// ps_tex samples an 8x8 gradient texture (texel (i,j) = (i/8, j/8, 0.5, 1))
 /// through the crafted bindless set, at the UV vs_ids runs 0..1 over a 64x64
 /// target. With a nearest sampler, pixel (x,y) reads texel
