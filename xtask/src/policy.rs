@@ -10,12 +10,14 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
-const MAX_FILE_SIZE: usize = 512 * 1024;
+// 2 MiB: large clean-room source (the vendored RDNA2 translator is ~1 MiB of
+// Python) is legitimate text; the limit still catches binary blobs.
+const MAX_FILE_SIZE: usize = 2 * 1024 * 1024;
 const MAX_ENCODED_RUN: usize = 512;
 
 const ALLOWED_EXTENSIONS: &[&str] = &[
     "rs", "toml", "md", "txt", "lock", "yml", "yaml", "json", "hlsl", "hlsli", "ps1", "cmd", "sh",
-    "py",
+    "py", "asm",
 ];
 const ALLOWED_NAMES: &[&str] = &[
     ".gitignore",
@@ -209,7 +211,7 @@ mod tests {
             "extension not allowed"
         );
         assert!(
-            !check("a.rs", &vec![b'a'; 600 * 1024]).is_empty(),
+            !check("a.rs", &vec![b'a'; 3 * 1024 * 1024]).is_empty(),
             "too big"
         );
     }
