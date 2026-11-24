@@ -320,6 +320,51 @@ pub extern "system" fn WaitOnAddress(
     r
 }
 
+/// The title's event wait (`WaitForSingleObject`): logged when it blocks
+/// over a second or times out, to name the stall the fps breakdown leaves
+/// unaccounted (a 13.7 s frame measured only ~5 ms of GPU/preparing work).
+/// Forwards unchanged.
+pub extern "system" fn WaitForSingleObject(handle: *mut c_void, ms: u32) -> u32 {
+    let started = std::time::Instant::now();
+    let r = host::wait_for_single_object(handle, ms);
+    let waited = started.elapsed();
+    if waited > std::time::Duration::from_millis(1000) || r == 0x102 {
+        tracing::warn!(
+            handle = format_args!("{handle:p}"),
+            timeout_ms = ms,
+            waited_ms = waited.as_millis(),
+            result = r,
+            from = %host::callers(),
+            "WaitForSingleObject blocked"
+        );
+    }
+    r
+}
+
+/// The title's multi-object wait (`WaitForMultipleObjects`): logged like
+/// [`WaitForSingleObject`]. Forwards unchanged.
+pub extern "system" fn WaitForMultipleObjects(
+    count: u32,
+    handles: *const *mut c_void,
+    wait_all: i32,
+    ms: u32,
+) -> u32 {
+    let started = std::time::Instant::now();
+    let r = host::wait_for_multiple_objects(count, handles, wait_all, ms);
+    let waited = started.elapsed();
+    if waited > std::time::Duration::from_millis(1000) || r == 0x102 {
+        tracing::warn!(
+            count,
+            timeout_ms = ms,
+            waited_ms = waited.as_millis(),
+            result = r,
+            from = %host::callers(),
+            "WaitForMultipleObjects blocked"
+        );
+    }
+    r
+}
+
 /// `ntdll!RtlExitUserProcess` — the path a clean guest quit takes that
 /// kernel32!ExitProcess interception misses. Log the code and the guest
 /// callers (the last guest calls before the quit).
@@ -441,6 +486,8 @@ pub(crate) fn module() -> HleModule {
             hle_export!(TerminateProcess),
             hle_export!(ExitProcess),
             hle_export!(WaitOnAddress),
+            hle_export!(WaitForSingleObject),
+            hle_export!(WaitForMultipleObjects),
             hle_export!(RtlExitUserProcess),
             hle_export!(NtTerminateProcess),
             hle_export!(ExitThread),
@@ -465,7 +512,10 @@ mod host {
         DisableThreadLibraryCalls, GetModuleFileNameA, GetModuleFileNameW, GetModuleHandleA,
         GetModuleHandleW, GetProcAddress, LoadLibraryExA, LoadLibraryExW,
     };
-    use windows_sys::Win32::System::Threading::{ExitProcess, ExitThread, TerminateProcess, WaitOnAddress};
+    use windows_sys::Win32::System::Threading::{
+        ExitProcess, ExitThread, TerminateProcess, WaitForMultipleObjects, WaitForSingleObject,
+        WaitOnAddress,
+    };
 
     #[link(name = "ntdll")]
     unsafe extern "system" {
@@ -583,6 +633,21 @@ mod host {
     ) -> i32 {
         // SAFETY: the title's own arguments, forwarded to the host API.
         unsafe { WaitOnAddress(address, compare, size, ms) }
+    }
+
+    pub(super) fn wait_for_single_object(handle: *mut c_void, ms: u32) -> u32 {
+        // SAFETY: the title's own arguments, forwarded to the host API.
+        unsafe { WaitForSingleObject(handle, ms) }
+    }
+
+    pub(super) fn wait_for_multiple_objects(
+        count: u32,
+        handles: *const *mut c_void,
+        wait_all: i32,
+        ms: u32,
+    ) -> u32 {
+        // SAFETY: the title's own arguments, forwarded to the host API.
+        unsafe { WaitForMultipleObjects(count, handles, wait_all, ms) }
     }
 
     pub(super) fn set_unhandled_exception_filter(filter: extern "system" fn(*const c_void) -> i32) {
@@ -703,6 +768,19 @@ mod host {
         _ms: u32,
     ) -> i32 {
         1
+    }
+
+    pub(super) fn wait_for_single_object(_handle: *mut c_void, _ms: u32) -> u32 {
+        0
+    }
+
+    pub(super) fn wait_for_multiple_objects(
+        _count: u32,
+        _handles: *const *mut c_void,
+        _wait_all: i32,
+        _ms: u32,
+    ) -> u32 {
+        0
     }
 
     pub(super) fn set_unhandled_exception_filter(_: extern "system" fn(*const c_void) -> i32) {}
