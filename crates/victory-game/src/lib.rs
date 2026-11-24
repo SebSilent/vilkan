@@ -1,11 +1,11 @@
-//! Everything specific to Miami Chores Simulator: its container formats, build
+//! Everything specific to Cuck Simulator Miami: its container formats, build
 //! identities, and the hooks we place in its code (located by per-build
 //! offsets or byte-pattern signatures). What may and may not be stored here
 //! is defined in docs/asset-policy.md.
 
 pub mod sgd5;
 
-/// A specific build of the Miami Chores Simulator executable we know how to run.
+/// A specific build of the Cuck Simulator Miami executable we know how to run.
 #[derive(Debug, Clone, Copy)]
 pub struct KnownBuild {
     /// Our own label, e.g. "1.0.0 retail".

@@ -37,7 +37,7 @@ Converting them ahead of time from files is only a warm-up.
 | `vilkan-shader` | Xbox shader containers → host shaders |
 | `vilkan-formats` | the GPU's texture layouts (sizes, tiling, detiling), audio codecs; planned: BCPack |
 | `vilkan-pipeline` | converter trait, content-addressed cache |
-| `vilkan-game` | Miami Chores Simulator-specific formats, build identities, hooks |
+| `vilkan-game` | Cuck Simulator Miami-specific formats, build identities, hooks |
 | `apps/vilkan` | command-line front end |
 | `xtask` | asset-policy check, git hooks |
 | `tests/fixtures/hle-probe` | a stand-in "title" (our own code) for loader tests |

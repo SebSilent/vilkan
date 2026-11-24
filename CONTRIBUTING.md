@@ -23,9 +23,9 @@ the tree (`../vilkan-data`), and the data-dependent tests read it from env paths
 and **skip cleanly** when absent — a clean clone with no game data builds and
 passes the full suite.
 
-### The MCS naming rule
+### The CSM naming rule
 
-The supported title is referred to only as **Miami Chores Simulator (MCS)**. The
+The supported title is referred to only as **Cuck Simulator Miami (CSM)**. The
 real game name, publisher, release/scene tags, and any title-identifying string
 are kept out of the tree, commit messages, and documentation.
 

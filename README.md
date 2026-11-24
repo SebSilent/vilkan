@@ -1,12 +1,12 @@
 See [CONTRIBUTING](CONTRIBUTING.md).
 
-# VIlkan — Miami Chores Simulator (Xbox), native on Linux
+# VIlkan — Cuck Simulator Miami (Xbox), native on Linux
 
 **VIlkan is built on [VIctory](https://github.com/Marvisak/VIctory)** (the Xbox
 Series X|S → Windows compatibility layer), with our own Linux runtime, wave64
 work, and a native Vulkan translation path. The title's x86-64 code runs
 unchanged inside our process; VIlkan supplies the platform underneath it. The
-supported title is referred to only as **Miami Chores Simulator (MCS)**. See
+supported title is referred to only as **Cuck Simulator Miami (CSM)**. See
 [NOTICE](NOTICE) for attribution and what is ours.
 
 Two backends, one loader/HLE:
@@ -45,7 +45,7 @@ Two backends, one loader/HLE:
 
 **What you must supply yourself** (none of it is in this repo)
 
-- **The title** — your own dump of Miami Chores Simulator (Xbox Series X|S).
+- **The title** — your own dump of Cuck Simulator Miami (Xbox Series X|S).
   Point `VILKAN_GAME_DIR` (or `GAME_DIR`) at its folder.
 - **The translator is vendored** — a clean-room RDNA2 → SPIR-V translator
   (GPL-3.0) lives in `third_party/rdna2spirv/`, so the native path works from a

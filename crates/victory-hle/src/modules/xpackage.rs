@@ -20,7 +20,7 @@ pub const PROVIDER: Guid = Guid::new(
     [0xa8, 0x8d, 0x2f, 0x3d, 0xcb, 0x9d, 0xac, 0x7e],
 );
 
-/// As Miami Chores Simulator (2026) asks for it. Its slots up to 0xd0 take the
+/// As Cuck Simulator Miami (2026) asks for it. Its slots up to 0xd0 take the
 /// arguments the public API lists in the same order; 0x110 uninstalls a
 /// package, 0x128/0x130 mount one with UI, 0x138 enumerates packages.
 pub const IID_2026: Guid = Guid::new(
@@ -139,7 +139,7 @@ extern "system" fn register_progress(
 /// 0: ready.
 // shortcut: every selector counts as installed, including ones the
 // package's layout does not have (the console answers those with an
-// invalid-selector error); Miami Chores Simulator asks only about its own
+// invalid-selector error); Cuck Simulator Miami asks only about its own
 // chunks, which a full install has.
 extern "system" fn find_availability(
     _: This,
@@ -210,7 +210,7 @@ extern "system" fn estimate_download(
 }
 
 // shortcut: accepted but nothing is removed (the package folder is the
-// user's), so the chunks stay ready; Miami Chores Simulator's one call site
+// user's), so the chunks stay ready; Cuck Simulator Miami's one call site
 // (a title offset, its chunk manager) would then see them still installed.
 extern "system" fn uninstall_chunks(
     _: This,
@@ -256,7 +256,7 @@ extern "system" fn mount_result(
 
 /// Titles enumerate content packages (kind 1); there are none.
 // shortcut: the game kind (0) also lists nothing, not this installation;
-// Miami Chores Simulator enumerates only content (kind 1, a title offset).
+// Cuck Simulator Miami enumerates only content (kind 1, a title offset).
 extern "system" fn enumerate(
     _: This,
     kind: u32,

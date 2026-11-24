@@ -219,7 +219,7 @@ struct Mode {
 }
 const _: () = assert!(size_of::<Mode>() == 32);
 
-/// The console's mode list: one 4K mode at 60 Hz (Miami Chores Simulator looks
+/// The console's mode list: one 4K mode at 60 Hz (Cuck Simulator Miami looks
 /// for a 120 Hz one to allow 120 Hz frame intervals).
 /// shortcut: fixed mode, not the host display's; report the host's rates if
 /// a title paces by them.

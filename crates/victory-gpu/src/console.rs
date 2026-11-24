@@ -17,7 +17,7 @@ impl Console {
     /// advanced configuration; Series S has one range, counted as standard
     /// (7,776 MiB, the published console-mode figure).
     // shortcut: later system updates gave Series S titles more (amount not
-    // published here); Miami Chores Simulator sizes nothing from this figure
+    // published here); Cuck Simulator Miami sizes nothing from this figure
     // (it goes by the device type), so update it if a title does.
     pub const fn title_memory(self) -> (usize, usize) {
         match self {

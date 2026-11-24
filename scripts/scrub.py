@@ -2,8 +2,8 @@
 """Repeatable game-name scrub for the publishable tree.
 
 Strips the title, publisher, release/scene tags and title-identifying strings
-from tracked source/docs, replacing them with the generic alias "Miami Chores
-Simulator" (MCS). Idempotent: re-running after an upstream sync changes nothing that
+from tracked source/docs, replacing them with the generic alias "Cuck Simulator
+Miami" (CSM). Idempotent: re-running after an upstream sync changes nothing that
 is already scrubbed. Project names (VIctory, the upstream) are NOT touched —
 they are credited in NOTICE, not scrubbed.
 
@@ -41,6 +41,13 @@ _spec.loader.exec_module(_m)
 LITERAL, REGEX = _m.LITERAL, _m.REGEX
 # Regex rules: title-specific code offsets and release/signature dates.
 TEXT_EXT = {".rs", ".toml", ".md", ".sh", ".py", ".bat", ".txt"}
+# Tracked text files without an extension must be scrubbed too (NOTICE carries
+# the public-alias sentence).
+TEXT_NAMES = {"NOTICE", "LICENSE", "LICENSE-MIT", "LICENSE-APACHE"}
+
+
+def is_scrubbable(p: Path) -> bool:
+    return p.suffix in TEXT_EXT or (p.suffix == "" and p.name in TEXT_NAMES)
 
 
 def scrub_text(s: str) -> str:
@@ -53,7 +60,7 @@ def scrub_text(s: str) -> str:
 
 def tracked_files():
     out = subprocess.check_output(["git", "ls-files"]).decode().splitlines()
-    return [f for f in out if Path(f).suffix in TEXT_EXT and Path(f).is_file()]
+    return [f for f in out if is_scrubbable(Path(f)) and Path(f).is_file()]
 
 
 def main():
@@ -65,7 +72,7 @@ def main():
     changed = []
     for f in files:
         p = Path(f)
-        if not p.is_file() or p.suffix not in TEXT_EXT:
+        if not p.is_file() or not is_scrubbable(p):
             continue
         try:
             s = p.read_text()
