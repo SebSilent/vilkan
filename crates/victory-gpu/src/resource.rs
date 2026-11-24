@@ -261,6 +261,15 @@ pub(crate) fn narrow_target(this: crate::object::This) -> bool {
     narrow_colour(r.desc.format) && r.desc.flags & 5 != 0
 }
 
+/// The host view format for a console `view` of a resource whose host format
+/// is `own`: a narrow colour view (86 B5G5R5A1 / 115 B4G4R4A4) of a resource
+/// made RGBA8 (28) on the host is itself RGBA8 — the same equivalence the
+/// creation, clear value and pipeline RT formats use. Other views pass
+/// through unchanged.
+pub(crate) fn host_view_format(view: u32, own: u32) -> u32 {
+    if narrow_colour(view) && own == 28 { 28 } else { view }
+}
+
 /// The typeless format of a format's family (itself if it has none).
 pub(crate) fn family(format: u32) -> u32 {
     const FAMILIES: [(u32, u32); 22] = [
@@ -1461,6 +1470,12 @@ mod tests {
         assert_eq!(pc_target_format(87), 87);
         assert!(narrow_colour(86) && narrow_colour(115));
         assert!(!narrow_colour(85) && !narrow_colour(28));
+        // A converted-resource view is accepted as RGBA8; others unchanged.
+        assert_eq!(host_view_format(86, 28), 28);
+        assert_eq!(host_view_format(115, 28), 28);
+        assert_eq!(host_view_format(86, 86), 86);
+        assert_eq!(host_view_format(87, 28), 87);
+        assert_eq!(host_view_format(0, 28), 0);
     }
 
     #[test]

@@ -566,6 +566,9 @@ fn fits(texture: &ID3D12Resource, mut format: Option<&mut DXGI_FORMAT>, unordere
         format.0 = linear as i32;
     }
     let view = format.as_ref().map_or(0, |f| f.0 as u32);
+    // A narrow colour target made RGBA8 on the host: its views name the
+    // console format (86/115); compare them as RGBA8 (28).
+    let view = crate::resource::host_view_format(view, own);
     if view == 0 {
         return !typeless;
     }
