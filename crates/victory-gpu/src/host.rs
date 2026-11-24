@@ -954,6 +954,18 @@ impl HostList {
         Some(unsafe { buffer.GetGPUVirtualAddress() })
     }
 
+    /// The budget buffer resource, for the typed UAV the argument clamp
+    /// creates over it (a structured uint buffer).
+    pub(crate) fn budget_resource(&self) -> Option<ID3D12Resource> {
+        self.budget
+            .get_or_init(|| {
+                let (b, d) = host()?.shared_buffer(256)?;
+                Some((b, d as usize))
+            })
+            .as_ref()
+            .map(|(b, _)| b.clone())
+    }
+
     /// Keeps `object` alive until the list is reset.
     pub(crate) fn keep(&self, object: &impl Interface) {
         if let Ok(object) = object.cast::<windows::core::IUnknown>() {

@@ -17,47 +17,61 @@
 use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
 use windows::Win32::Graphics::Direct3D::ID3DBlob;
 use windows::Win32::Graphics::Direct3D12::*;
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R32_UINT, DXGI_FORMAT_UNKNOWN};
 use windows::core::s;
 
 use crate::host::{HostList, host, transition};
 
-// FXC-compatible (cs_5_0): no [RootSignature] attribute (that is DXC-only,
-// and Proton ships no DXC). The root signature is serialized separately in
-// make() — RootConstants(4, b0), UAV(u0), UAV(u1) — matching bound()'s binds.
+// FXC-compatible (cs_5_0): no [RootSignature] attribute (DXC-only; Proton
+// ships no DXC). Typed buffers, NOT RWByteAddressBuffer: Proton's
+// D3DCompile (vkd3d-shader) lacks RWByteAddressBuffer.Load/InterlockedAdd
+// (probe: E5005) but supports RWBuffer<uint> and RWStructuredBuffer<uint>.
+// args is a typed R32_UINT UAV we create over the argument buffer (index =
+// byte/4; stride and the buffer are 4-aligned, bound() checks). budget is a
+// structured uint UAV (InterlockedAdd). The root signature is serialized
+// separately in make(): RootConstants(4, b0) + a UAV descriptor table
+// (u0 = args, u1 = budget).
 const SOURCE: &str = r#"
 cbuffer Record : register(b0) { uint kind; uint stride; uint records; uint unused; };
-RWByteAddressBuffer args : register(u0);
+RWBuffer<uint> args : register(u0);
 // The list's work so far (vertex instances, threads): past the budget,
 // records run empty.
-RWByteAddressBuffer budget : register(u1);
+RWStructuredBuffer<uint> budget : register(u1);
 static const uint BUDGET = 1u << 28;
 [numthreads(64, 1, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
     if (id.x >= records) return;
-    uint at = id.x * stride;
+    uint at = (id.x * stride) / 4;
     uint cost;
     if (kind <= 1) {
         // Draws: vertex or index count, then instances.
-        uint count = min(args.Load(at), 1u << 24);
-        uint instances = min(args.Load(at + 4), (1u << 26) / max(count, 1u));
+        uint count = min(args[at], 1u << 24);
+        uint instances = min(args[at + 1], (1u << 26) / max(count, 1u));
         cost = count * instances;
-        args.Store2(at, uint2(count, instances));
+        args[at] = count;
+        args[at + 1] = instances;
     } else if (kind == 2) {
-        uint3 g = min(args.Load3(at), uint3(65535, 65535, 65535));
+        uint3 g = uint3(min(args[at], 65535u), min(args[at + 1], 65535u), min(args[at + 2], 65535u));
         cost = min(g.x * g.y * g.z, 1u << 20) * 64;
-        args.Store3(at, g);
+        args[at] = g.x;
+        args[at + 1] = g.y;
+        args[at + 2] = g.z;
     } else {
         // Mesh dispatches: the console's are one-dimensional.
-        uint3 g = args.Load3(at);
+        uint3 g = uint3(args[at], args[at + 1], args[at + 2]);
         g = uint3(min(g.x, 65535u), min(g.y, 1u), min(g.z, 1u));
         cost = g.x * g.y * g.z * 128;
-        args.Store3(at, g);
+        args[at] = g.x;
+        args[at + 1] = g.y;
+        args[at + 2] = g.z;
     }
     uint before;
-    budget.InterlockedAdd(0, cost, before);
+    // Free-function form: vkd3d-shader lacks the .InterlockedAdd method
+    // (probe E5005) but supports InterlockedAdd(budget[0], ...).
+    InterlockedAdd(budget[0], cost, before);
     if (before >= BUDGET || before + cost > BUDGET) {
         // Draws keep their layout with no vertices; groups become zero.
-        args.Store(at, 0);
+        args[at] = 0;
     }
 }
 "#;
@@ -65,6 +79,10 @@ void main(uint3 id : SV_DispatchThreadID) {
 struct Clamp {
     root: ID3D12RootSignature,
     pso: ID3D12PipelineState,
+    // A private 2-descriptor heap: the typed args UAV (u0) and the
+    // structured budget UAV (u1), recreated per clamp in bound().
+    heap: ID3D12DescriptorHeap,
+    increment: u32,
 }
 
 // SAFETY: D3D12 objects are free-threaded.
@@ -117,8 +135,17 @@ fn make() -> windows::core::Result<Clamp> {
     }
     let code = code.ok_or_else(windows::core::Error::empty)?;
     // The root signature, serialized separately (the shader has no
-    // [RootSignature] attribute): RootConstants(4, b0), UAV(u0), UAV(u1) —
-    // the layout bound() binds (constants 0, UAV 1 = args, UAV 2 = budget).
+    // [RootSignature] attribute): RootConstants(4, b0) + a UAV descriptor
+    // table (u0 = typed args, u1 = structured budget). Typed buffers need
+    // descriptor UAVs, not root UAVs (which are raw byte-address).
+    let range = D3D12_DESCRIPTOR_RANGE1 {
+        RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
+        NumDescriptors: 2,
+        BaseShaderRegister: 0,
+        RegisterSpace: 0,
+        Flags: D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE,
+        OffsetInDescriptorsFromTableStart: 0,
+    };
     let params = [
         D3D12_ROOT_PARAMETER1 {
             ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
@@ -132,30 +159,19 @@ fn make() -> windows::core::Result<Clamp> {
             ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
         },
         D3D12_ROOT_PARAMETER1 {
-            ParameterType: D3D12_ROOT_PARAMETER_TYPE_UAV,
+            ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
             Anonymous: D3D12_ROOT_PARAMETER1_0 {
-                Descriptor: D3D12_ROOT_DESCRIPTOR1 {
-                    ShaderRegister: 0,
-                    RegisterSpace: 0,
-                    Flags: D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE,
-                },
-            },
-            ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
-        },
-        D3D12_ROOT_PARAMETER1 {
-            ParameterType: D3D12_ROOT_PARAMETER_TYPE_UAV,
-            Anonymous: D3D12_ROOT_PARAMETER1_0 {
-                Descriptor: D3D12_ROOT_DESCRIPTOR1 {
-                    ShaderRegister: 1,
-                    RegisterSpace: 0,
-                    Flags: D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE,
+                DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE1 {
+                    NumDescriptorRanges: 1,
+                    pDescriptorRanges: &range,
                 },
             },
             ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
         },
     ];
     let root = crate::pipeline::host::root_signature(device, &params, &[], true)?;
-    // SAFETY: the blob's own bytes; the root signature is ours, live.
+    // SAFETY: the blob's own bytes; the root signature is ours, live; plain
+    // heap creation and handle queries.
     unsafe {
         let bytes = std::slice::from_raw_parts(code.GetBufferPointer().cast::<u8>(), code.GetBufferSize());
         let pso = device.CreateComputePipelineState(&D3D12_COMPUTE_PIPELINE_STATE_DESC {
@@ -166,7 +182,14 @@ fn make() -> windows::core::Result<Clamp> {
             },
             ..Default::default()
         })?;
-        Ok(Clamp { root, pso })
+        let heap = device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
+            Type: D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+            NumDescriptors: 2,
+            Flags: D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+            NodeMask: 0,
+        })?;
+        let increment = device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        Ok(Clamp { root, pso, heap, increment })
     }
 }
 
@@ -181,7 +204,10 @@ pub(crate) fn bound(
     gpu: u64,
     (kind, stride, records): (u32, u32, u32),
 ) -> bool {
-    let (Some(c), Some(budget)) = (clamp(), list.budget()) else {
+    let (Some(c), Some(_budget_gpu)) = (clamp(), list.budget()) else {
+        return false;
+    };
+    let (Some(h), Some(budget_buf)) = (host(), list.budget_resource()) else {
         return false;
     };
     if !gpu.is_multiple_of(4) || !stride.is_multiple_of(4) {
@@ -189,16 +215,51 @@ pub(crate) fn bound(
     }
     let l = &list.list;
     let constants = [kind, stride, records, 0];
-    // SAFETY: an open list; our root signature, pipeline and a live buffer
-    // the caller's list holds.
+    // SAFETY: an open list; our root signature, pipeline, heap and live
+    // buffers the caller's list holds.
     unsafe {
+        let size = buffer.GetDesc().Width;
+        let cpu = c.heap.GetCPUDescriptorHandleForHeapStart();
+        let gpu_handle = c.heap.GetGPUDescriptorHandleForHeapStart();
+        // args: a typed R32_UINT UAV over the argument buffer (index =
+        // byte/4; the buffer and stride are 4-aligned, checked above).
+        let args_desc = D3D12_UNORDERED_ACCESS_VIEW_DESC {
+            Format: DXGI_FORMAT_R32_UINT,
+            ViewDimension: D3D12_UAV_DIMENSION_BUFFER,
+            Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
+                Buffer: D3D12_BUFFER_UAV {
+                    FirstElement: 0,
+                    NumElements: (size / 4) as u32,
+                    StructureByteStride: 0,
+                    CounterOffsetInBytes: 0,
+                    Flags: D3D12_BUFFER_UAV_FLAG_NONE,
+                },
+            },
+        };
+        h.device.CreateUnorderedAccessView(buffer, None, Some(&args_desc), cpu);
+        // budget: a structured uint UAV (InterlockedAdd).
+        let budget_cpu = D3D12_CPU_DESCRIPTOR_HANDLE { ptr: cpu.ptr + c.increment as usize };
+        let budget_desc = D3D12_UNORDERED_ACCESS_VIEW_DESC {
+            Format: DXGI_FORMAT_UNKNOWN,
+            ViewDimension: D3D12_UAV_DIMENSION_BUFFER,
+            Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
+                Buffer: D3D12_BUFFER_UAV {
+                    FirstElement: 0,
+                    NumElements: 64,
+                    StructureByteStride: 4,
+                    CounterOffsetInBytes: 0,
+                    Flags: D3D12_BUFFER_UAV_FLAG_NONE,
+                },
+            },
+        };
+        h.device.CreateUnorderedAccessView(&budget_buf, None, Some(&budget_desc), budget_cpu);
         // Earlier shader writes (the title's argument passes) first.
         l.ResourceBarrier(&[uav_barrier()]);
         l.SetComputeRootSignature(&c.root);
         l.SetPipelineState(&c.pso);
         l.SetComputeRoot32BitConstants(0, 4, constants.as_ptr().cast(), 0);
-        l.SetComputeRootUnorderedAccessView(1, gpu);
-        l.SetComputeRootUnorderedAccessView(2, budget);
+        l.SetDescriptorHeaps(&[Some(c.heap.clone())]);
+        l.SetComputeRootDescriptorTable(1, gpu_handle);
         l.Dispatch(records.div_ceil(64), 1, 1);
         l.ResourceBarrier(&[
             uav_barrier(),
