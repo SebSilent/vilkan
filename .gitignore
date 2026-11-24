@@ -101,3 +101,6 @@ __pycache__/
 *.swp
 Thumbs.db
 .DS_Store
+
+# Local goal/authorization notes (not for publication)
+/GOAL.local.md
