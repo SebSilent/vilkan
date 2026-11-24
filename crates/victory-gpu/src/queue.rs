@@ -124,6 +124,10 @@ extern "system" fn execute(_: This, count: u32, lists: *const This) {
             .filter_map(|&l| crate::list::host_list(l))
             .collect();
         host.execute(&host_lists);
+        #[cfg(feature = "diagnostics")]
+        if let Some(folder) = crate::drawcap::folder() {
+            crate::capture::flush_draw_readbacks(folder);
+        }
         return;
     }
     static ONCE: AtomicBool = AtomicBool::new(false);

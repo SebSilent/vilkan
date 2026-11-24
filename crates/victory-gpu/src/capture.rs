@@ -294,6 +294,51 @@ fn dump_one(
     }
 }
 
+/// Per-draw render-target readbacks (the Proton oracle for the native replay).
+/// A copy is inserted into the title's list right after the draw; the buffer is
+/// read once the list has been submitted.
+static DRAW_READBACKS: std::sync::Mutex<Vec<(u64, ID3D12Resource, D3D12_PLACED_SUBRESOURCE_FOOTPRINT)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Insert a readback of `resource` after the current draw, tagged with `ordinal`.
+pub(crate) fn note_draw_readback(ordinal: u64, list: &ID3D12GraphicsCommandList, resource: crate::object::This) {
+    let Some(texture) = crate::resource::host_resource(resource) else { return };
+    let Some(host) = crate::host::host() else { return };
+    // SAFETY: a live texture; the copy is appended to the open title list.
+    let read = unsafe {
+        let state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        let copy = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        list.ResourceBarrier(&[crate::host::transition(texture, state, copy)]);
+        let read = read_back(&host.device, list, texture);
+        list.ResourceBarrier(&[crate::host::transition(texture, copy, state)]);
+        read
+    };
+    if let Some((buffer, footprint)) = read {
+        DRAW_READBACKS.lock().unwrap_or_else(|e| e.into_inner()).push((ordinal, buffer, footprint));
+    }
+}
+
+/// After a submission: read the pending per-draw readbacks and save oracle bytes.
+pub(crate) fn flush_draw_readbacks(folder: &std::path::Path) {
+    let pending = std::mem::take(&mut *DRAW_READBACKS.lock().unwrap_or_else(|e| e.into_inner()));
+    for (ordinal, buffer, footprint) in pending {
+        let f = footprint.Footprint;
+        let mut data = std::ptr::null_mut();
+        // SAFETY: the submission ran; the mapping spans the footprint's rows.
+        unsafe {
+            if buffer.Map(0, None, Some(&mut data)).is_err() {
+                continue;
+            }
+            let pitch = f.RowPitch as usize;
+            let rows = std::slice::from_raw_parts(data.cast::<u8>(), pitch * f.Height as usize);
+            if let Some(rgba) = to_rgba(f.Format.0 as u32, f.Width as usize, f.Height as usize, pitch, rows) {
+                let _ = std::fs::write(folder.join(format!("oracle-{ordinal}.bin")), &rgba);
+            }
+            buffer.Unmap(0, None);
+        }
+    }
+}
+
 fn half(h: u16) -> f32 {
     let (sign, exp, man) = ((h >> 15) as u32, ((h >> 10) & 0x1f) as i32, (h & 0x3ff) as f32);
     let v = match exp {

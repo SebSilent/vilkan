@@ -13,6 +13,7 @@ use ash::vk;
 
 pub mod bindless;
 pub mod graphics;
+pub mod replay;
 #[cfg(feature = "present")]
 pub mod present;
 

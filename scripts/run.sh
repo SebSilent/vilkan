@@ -66,6 +66,8 @@ export VICTORY_GAME_DIR="$(winpath "$GAME_DIR")"
 export VICTORY_CACHE_DIR="$(winpath "$VILKAN_DATA/cache")"
 export VICTORY_DATA_DIR="$(winpath "$VILKAN_DATA/data")"
 export VICTORY_LOG="${VILKAN_LOG:-info}"
+# Backend-neutral draw capture (observes only; the D3D12 path is unchanged).
+export VILKAN_DRAW_CAPTURE="${VILKAN_DRAW_CAPTURE:-}"
 export VKD3D_DEBUG="${VKD3D_DEBUG:-warn}"
 export DXVK_LOG_LEVEL="${DXVK_LOG_LEVEL:-warn}"
 

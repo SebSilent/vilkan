@@ -59,6 +59,14 @@ pub struct RenderTarget {
     pub height: u32,
 }
 
+/// A root view's buffer bytes (a root CBV/SRV the shaders read directly),
+/// captured from console memory so the replay can place them in its heap.
+#[derive(Serialize, Deserialize)]
+pub struct ViewBuffer {
+    pub address: u64,
+    pub data_file: String,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct Viewport {
     pub x: f32,
@@ -83,8 +91,12 @@ pub struct DrawRecord {
     pub inputs: Vec<VertexInput>,
     pub vertex_buffers: Vec<VertexBuffer>,
     pub roots: Vec<RootBinding>,
+    /// Bytes of any root-view buffers the shaders read (address -> sidecar file).
+    pub view_buffers: Vec<ViewBuffer>,
     pub targets: Vec<RenderTarget>,
     pub viewport: Viewport,
+    /// The D3D12 render-target readback for this draw (the oracle), if captured.
+    pub oracle_file: Option<String>,
 }
 
 /// Whether capture is enabled, and where.

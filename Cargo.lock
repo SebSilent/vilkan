@@ -1863,6 +1863,8 @@ dependencies = [
  "ash",
  "ash-window",
  "raw-window-handle",
+ "serde",
+ "serde_json",
  "winit",
 ]
 

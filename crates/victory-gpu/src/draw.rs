@@ -852,6 +852,22 @@ impl State {
             crate::resource::target_info(t as This)
                 .map(|(format, width, height)| RenderTarget { format, width, height })
         }).collect();
+        // Root-view buffers the shaders read directly: capture their bytes from
+        // console memory (a bounded window) so the replay can place them in its heap.
+        let mut view_buffers = Vec::new();
+        for r in &self.graphics {
+            if let Root::View(a) = r {
+                if *a == 0 {
+                    continue;
+                }
+                const WINDOW: u64 = 64 * 1024;
+                // SAFETY: console memory is unified; the root view lies in it.
+                let bytes = unsafe { std::slice::from_raw_parts(*a as *const u8, WINDOW as usize) };
+                let file = format!("view-{:x}-{}.bin", a, ordinal);
+                let _ = std::fs::write(folder.join(&file), bytes);
+                view_buffers.push(ViewBuffer { address: *a, data_file: file });
+            }
+        }
         // The viewport is the render target extent (the title sets it to the
         // target); the record carries it for the replay.
         let (vw, vh) = targets.first().map(|t| (t.width, t.height)).unwrap_or((0, 0));
@@ -866,11 +882,13 @@ impl State {
             inputs,
             vertex_buffers,
             roots,
+            view_buffers,
             targets,
             viewport: Viewport {
                 x: 0.0, y: 0.0, width: vw as f32, height: vh as f32,
                 min_depth: 0.0, max_depth: 1.0,
             },
+            oracle_file: None,
         };
         let path = folder.join(format!("draw-{ordinal}.json"));
         match serde_json::to_string_pretty(&rec) {
@@ -879,6 +897,14 @@ impl State {
                 tracing::info!(path = %path.display(), "draw captured");
             }
             Err(e) => tracing::warn!(error = %e, "draw capture serialize failed"),
+        }
+        // The Proton oracle: read back the render target right after this draw
+        // (the first draw), so the native replay can be checked against it.
+        #[cfg(feature = "diagnostics")]
+        if ordinal == 1 {
+            if let Some(&t) = self.targets.first() {
+                crate::capture::note_draw_readback(ordinal, &list.list, t as This);
+            }
         }
     }
 
