@@ -1,21 +1,12 @@
 # Contributing to VIlkan
 
-**The way in is the Discord, not a pull request.**
-
-➤ **Join the server: <https://discord.gg/K7EGDqvxpF>**
 
 We keep a **small, invite-only core team**. Unsolicited pull requests are **not**
 the entry point and will generally not be reviewed. Access, task assignment, and
-coordination all happen in Discord:
-
-1. **Join the Discord** and read the instructions pinned there.
-2. **Get coordinated through the organization** — introduce yourself, see what
-   the team is working on, and agree on a task before writing any code.
-3. **Get access and a task assigned in Discord.** Work is handed out and tracked
-   there; once you have a task and the go-ahead, you contribute against it.
+coordination all happen in Discord
 
 Please do not open drive-by PRs or start large changes without talking to the
-team first. The Discord is where scope, priorities, and access are decided.
+team first.
 
 VIlkan is built on [VIctory](https://github.com/Marvisak/VIctory); see
 [NOTICE](NOTICE) for attribution and what is ours.
