@@ -901,7 +901,7 @@ impl State {
         // The Proton oracle: read back the render target right after this draw
         // (the first draw), so the native replay can be checked against it.
         #[cfg(feature = "diagnostics")]
-        if ordinal == 1 {
+        if ordinal % 500 == 1 {
             if let Some(&t) = self.targets.first() {
                 crate::capture::note_draw_readback(ordinal, &list.list, t as This);
             }

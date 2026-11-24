@@ -230,6 +230,10 @@ pub struct TexturedQuad<'a> {
     image: vk::Image,
     image_memory: vk::DeviceMemory,
     view: vk::ImageView,
+    /// A black fallback image at bindless index 0 (negative-control mode only):
+    /// a descriptor lookup that misses lands here, so a corrupted key or heap
+    /// base samples black instead of the gradient at index 1.
+    fallback: Option<(vk::Image, vk::DeviceMemory, vk::ImageView)>,
     sampler: vk::Sampler,
     pub width: u32,
     pub height: u32,
@@ -237,8 +241,21 @@ pub struct TexturedQuad<'a> {
 
 impl<'a> TexturedQuad<'a> {
     pub fn new(ctx: &'a Context, w: u32, h: u32) -> Result<Self> {
+        Self::build(ctx, w, h, false)
+    }
+
+    /// Like `new`, but the gradient lives at bindless index 1 and a black
+    /// fallback at index 0, with the T# mapped to index 1. A lookup miss (a
+    /// corrupted descriptor key or a wrong heap base) then samples black, so the
+    /// descriptor faults are observable. Used only by the negative controls.
+    pub fn new_with_fallback(ctx: &'a Context, w: u32, h: u32) -> Result<Self> {
+        Self::build(ctx, w, h, true)
+    }
+
+    fn build(ctx: &'a Context, w: u32, h: u32, with_fallback: bool) -> Result<Self> {
         use crate::bindless::{build_hash_table, tsharp_key, HEAP_SIZE};
         let dev = &ctx.device;
+        let n_img = if with_fallback { 2 } else { 1 };
         let bindings_def = [
             (0u32, vk::DescriptorType::SAMPLED_IMAGE),
             (1, vk::DescriptorType::SAMPLER),
@@ -246,14 +263,16 @@ impl<'a> TexturedQuad<'a> {
         ];
         let binding_infos: Vec<vk::DescriptorSetLayoutBinding> = bindings_def.iter()
             .map(|&(binding, ty)| vk::DescriptorSetLayoutBinding::default()
-                .binding(binding).descriptor_type(ty).descriptor_count(1)
+                .binding(binding).descriptor_type(ty)
+                .descriptor_count(if binding == 0 { n_img } else { 1 })
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT))
             .collect();
         let layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&binding_infos);
         // SAFETY: valid device/create info.
         let set_layout = unsafe { dev.create_descriptor_set_layout(&layout_info, None) }?;
         let pool_sizes: Vec<vk::DescriptorPoolSize> = bindings_def.iter()
-            .map(|&(_, ty)| vk::DescriptorPoolSize::default().ty(ty).descriptor_count(1)).collect();
+            .map(|&(_, ty)| vk::DescriptorPoolSize::default().ty(ty)
+                .descriptor_count(if ty == vk::DescriptorType::SAMPLED_IMAGE { n_img } else { 1 })).collect();
         let pool_info = vk::DescriptorPoolCreateInfo::default().max_sets(1).pool_sizes(&pool_sizes);
         // SAFETY: valid device/create info.
         let pool = unsafe { dev.create_descriptor_pool(&pool_info, None) }?;
@@ -266,6 +285,34 @@ impl<'a> TexturedQuad<'a> {
         let fmt = vk::Format::R8G8B8A8_UNORM;
         let (image, image_memory, view) = ctx.make_image(fmt, w, h,
             vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST)?;
+        // Negative-control mode: a black fallback image at index 0, cleared and
+        // left shader-read so a lookup miss samples black.
+        let fallback = if with_fallback {
+            let (fi, fm, fv) = ctx.make_image(fmt, w, h,
+                vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST)?;
+            let range = vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 };
+            ctx.one_shot(|cmd| {
+                let to_dst = vk::ImageMemoryBarrier::default()
+                    .old_layout(vk::ImageLayout::UNDEFINED).new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                    .image(fi).subresource_range(range)
+                    .src_access_mask(vk::AccessFlags::empty()).dst_access_mask(vk::AccessFlags::TRANSFER_WRITE);
+                // SAFETY: valid command buffer/barrier.
+                unsafe { dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::TRANSFER, vk::DependencyFlags::empty(), &[], &[], std::slice::from_ref(&to_dst)) };
+                let black = vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 0.0] };
+                // SAFETY: valid command buffer/image in TRANSFER_DST.
+                unsafe { dev.cmd_clear_color_image(cmd, fi, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &black, std::slice::from_ref(&range)) };
+                let to_read = vk::ImageMemoryBarrier::default()
+                    .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL).new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image(fi).subresource_range(range)
+                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE).dst_access_mask(vk::AccessFlags::SHADER_READ);
+                // SAFETY: valid command buffer/barrier.
+                unsafe { dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::FRAGMENT_SHADER, vk::DependencyFlags::empty(), &[], &[], std::slice::from_ref(&to_read)) };
+                Ok(())
+            })?;
+            Some((fi, fm, fv))
+        } else {
+            None
+        };
         let sci = vk::SamplerCreateInfo::default()
             .mag_filter(vk::Filter::NEAREST).min_filter(vk::Filter::NEAREST)
             .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
@@ -285,26 +332,38 @@ impl<'a> TexturedQuad<'a> {
             std::ptr::copy_nonoverlapping(tkey.as_ptr() as *const u8, heap.ptr, 32);
             std::ptr::copy_nonoverlapping(skey4.as_ptr() as *const u8, heap.ptr.add(32), 16);
         }
-        let table = build_hash_table(&[(tkey, 0), (skey, 0)], 64)?;
+        // The gradient is at index 1 in fallback mode (index 0 is the black
+        // fallback); otherwise it is the only image, at index 0.
+        let img_index = if with_fallback { 1 } else { 0 };
+        let table = build_hash_table(&[(tkey, img_index), (skey, 0)], 64)?;
         let (table_buffer, table_memory, table_ptr) = ctx.make_buffer(table.len() * 4,
             vk::BufferUsageFlags::STORAGE_BUFFER,
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT)?;
         // SAFETY: host-visible, table.len()*4 bytes.
         unsafe { std::ptr::copy_nonoverlapping(table.as_ptr() as *const u8, table_ptr, table.len() * 4) };
 
-        // Bind image (0), sampler (1), hash table (2).
-        let image_info = vk::DescriptorImageInfo::default().image_view(view).image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+        // Bind image(s) (0), sampler (1), hash table (2). In fallback mode the
+        // array is [black fallback (0), gradient (1)]; otherwise [gradient (0)].
+        let gradient_info = vk::DescriptorImageInfo::default().image_view(view).image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+        let image_infos: Vec<vk::DescriptorImageInfo> = if let Some((_, _, fv)) = fallback {
+            vec![
+                vk::DescriptorImageInfo::default().image_view(fv).image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
+                gradient_info,
+            ]
+        } else {
+            vec![gradient_info]
+        };
         let sampler_info = vk::DescriptorImageInfo::default().sampler(sampler);
         let buffer_info = vk::DescriptorBufferInfo::default().buffer(table_buffer).offset(0).range((table.len() * 4) as u64);
         let writes = [
-            vk::WriteDescriptorSet::default().dst_set(set).dst_binding(0).descriptor_type(vk::DescriptorType::SAMPLED_IMAGE).image_info(std::slice::from_ref(&image_info)),
+            vk::WriteDescriptorSet::default().dst_set(set).dst_binding(0).descriptor_type(vk::DescriptorType::SAMPLED_IMAGE).image_info(&image_infos),
             vk::WriteDescriptorSet::default().dst_set(set).dst_binding(1).descriptor_type(vk::DescriptorType::SAMPLER).image_info(std::slice::from_ref(&sampler_info)),
             vk::WriteDescriptorSet::default().dst_set(set).dst_binding(2).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(std::slice::from_ref(&buffer_info)),
         ];
         // SAFETY: valid set/infos live for the call.
         unsafe { dev.update_descriptor_sets(&writes, &[]) };
 
-        Ok(TexturedQuad { ctx, set_layout, pool, set, heap, table_buffer, table_memory, image, image_memory, view, sampler, width: w, height: h })
+        Ok(TexturedQuad { ctx, set_layout, pool, set, heap, table_buffer, table_memory, image, image_memory, view, fallback, sampler, width: w, height: h })
     }
 
     /// Upload RGBA8 texels and transition the image to shader-read.
@@ -350,6 +409,36 @@ impl<'a> TexturedQuad<'a> {
         pc[33] = (self.heap.address >> 32) as u32;
         pc
     }
+
+    /// Draw with a deliberate fault, for negative controls. The fault-free draw
+    /// is the oracle; each fault must change the pixels. The textured quad reads
+    /// its T#/S# descriptor keys from the heap (the "view buffer") and the heap
+    /// base from the push constants, so all three faults perturb real inputs:
+    /// SkipDraw leaves the clear, CorruptViewBuffer scrambles the descriptor
+    /// keys, WrongPushConstants points the heap base elsewhere.
+    pub fn draw_with_fault(&self, rt: &RenderTarget<'_>, vs: &[u8], ps: &[u8],
+                           fault: crate::replay::Fault) -> Result<Vec<u32>> {
+        use crate::replay::Fault;
+        let mut pc = self.push_constants();
+        pc[8] = 0; pc[9] = 0; pc[11] = 32; // T# at heap+0, S# at heap+32
+        match fault {
+            Fault::None => {}
+            Fault::SkipDraw => return rt.clear_and_readback([0.0, 0.0, 0.0, 0.0]),
+            Fault::WrongPushConstants => pc[32] = pc[32].wrapping_add(0x10000),
+            Fault::CorruptViewBuffer => {
+                // SAFETY: heap mapped for HEAP_SIZE; the first 12 words hold the
+                // T# (8) and S# (4) keys the PS hashes. Scramble them in place.
+                unsafe {
+                    let p = self.heap.ptr as *mut u32;
+                    for i in 0..12 {
+                        *p.add(i) = (*p.add(i)).wrapping_mul(31).wrapping_add(17);
+                    }
+                }
+            }
+        }
+        rt.draw_with_set(vs, ps, [0.0, 0.0, 0.0, 0.0],
+            std::slice::from_ref(&self.set_layout), self.set, &pc)
+    }
 }
 
 impl Drop for TexturedQuad<'_> {
@@ -360,6 +449,11 @@ impl Drop for TexturedQuad<'_> {
             self.ctx.device.destroy_image_view(self.view, None);
             self.ctx.device.destroy_image(self.image, None);
             self.ctx.device.free_memory(self.image_memory, None);
+            if let Some((fi, fm, fv)) = self.fallback {
+                self.ctx.device.destroy_image_view(fv, None);
+                self.ctx.device.destroy_image(fi, None);
+                self.ctx.device.free_memory(fm, None);
+            }
             self.ctx.device.destroy_buffer(self.table_buffer, None);
             self.ctx.device.free_memory(self.table_memory, None);
             self.ctx.device.destroy_descriptor_pool(self.pool, None);

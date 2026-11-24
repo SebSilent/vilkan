@@ -5,7 +5,7 @@
 //! already be translated to SPIR-V (the vendored translator) and exact on
 //! wave32 (tier A/B).
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 use ash::vk;
 use serde::Deserialize;
 
@@ -48,9 +48,26 @@ pub struct ReplayResult {
     pub pixels: Vec<f32>,
 }
 
+/// A deliberate fault, for negative controls: a check that cannot fail is not
+/// acceptance. Each fault must make the replay disagree with the oracle.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Fault {
+    None,
+    /// Skip the draw entirely (the target stays at the clear colour).
+    SkipDraw,
+    /// Corrupt the root-view buffer bytes before placing them in the heap.
+    CorruptViewBuffer,
+    /// Put the root-view address in the wrong push-constant SGPRs.
+    WrongPushConstants,
+}
+
 /// Replay a captured draw: SPIR-V VS/PS, root-view buffers in the heap, draw,
 /// readback. `dir` holds draw.json, vs.spv, ps.spv and the view-buffer files.
 pub fn replay(ctx: &Context, dir: &std::path::Path) -> Result<ReplayResult> {
+    replay_with_fault(ctx, dir, Fault::None)
+}
+
+pub fn replay_with_fault(ctx: &Context, dir: &std::path::Path, fault: Fault) -> Result<ReplayResult> {
     let rec: DrawRecord = serde_json::from_str(&std::fs::read_to_string(dir.join("draw.json"))?)
         .context("parse draw.json")?;
     let vs = std::fs::read(dir.join("vs.spv"))?;
@@ -66,7 +83,12 @@ pub fn replay(ctx: &Context, dir: &std::path::Path) -> Result<ReplayResult> {
     let heap_size = (heap_end.max(1 << 20)) as usize;
     let heap = ctx.heap(heap_size)?;
     for vb in &rec.view_buffers {
-        let data = std::fs::read(dir.join(&vb.data_file))?;
+        let mut data = std::fs::read(dir.join(&vb.data_file))?;
+        if fault == Fault::CorruptViewBuffer {
+            for b in data.iter_mut() {
+                *b = b.wrapping_mul(31).wrapping_add(17);
+            }
+        }
         // SAFETY: the heap is mapped for heap_size; the buffer fits at its address.
         unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), heap.ptr.add(vb.address as usize), data.len()) };
     }
@@ -81,15 +103,26 @@ pub fn replay(ctx: &Context, dir: &std::path::Path) -> Result<ReplayResult> {
     for r in &rec.roots {
         if r.kind == "View" {
             if let Some(a) = r.address {
-                pc[8] = a as u32;
-                pc[9] = (a >> 32) as u32;
+                if fault == Fault::WrongPushConstants {
+                    // Wrong SGPRs: the VS reads s8/s9, so s4/s5 leaves it zero.
+                    pc[4] = a as u32;
+                    pc[5] = (a >> 32) as u32;
+                } else {
+                    pc[8] = a as u32;
+                    pc[9] = (a >> 32) as u32;
+                }
             }
         }
     }
     pc[32] = heap.address as u32;
     pc[33] = (heap.address >> 32) as u32;
 
-    let words = rt.draw_with_set(&vs, &ps, [0.0, 0.0, 0.0, 0.0], &[], vk::DescriptorSet::null(), &pc)?;
+    let words = if fault == Fault::SkipDraw {
+        // No draw: read back the cleared target.
+        rt.clear_and_readback([0.0, 0.0, 0.0, 0.0])?
+    } else {
+        rt.draw_with_set(&vs, &ps, [0.0, 0.0, 0.0, 0.0], &[], vk::DescriptorSet::null(), &pc)?
+    };
     let pixels: Vec<f32> = words.iter().map(|&w| f32::from_bits(w)).collect();
     Ok(ReplayResult { width: target.width, height: target.height, pixels })
 }

@@ -304,9 +304,12 @@ static DRAW_READBACKS: std::sync::Mutex<Vec<(u64, ID3D12Resource, D3D12_PLACED_S
 pub(crate) fn note_draw_readback(ordinal: u64, list: &ID3D12GraphicsCommandList, resource: crate::object::This) {
     let Some(texture) = crate::resource::host_resource(resource) else { return };
     let Some(host) = crate::host::host() else { return };
+    // The target's current host state (it may not be RENDER_TARGET after the draw).
+    let state = crate::resource::host_copy(resource)
+        .map(|c| D3D12_RESOURCE_STATES(c.state.load(std::sync::atomic::Ordering::Relaxed) as i32))
+        .unwrap_or(D3D12_RESOURCE_STATE_RENDER_TARGET);
     // SAFETY: a live texture; the copy is appended to the open title list.
     let read = unsafe {
-        let state = D3D12_RESOURCE_STATE_RENDER_TARGET;
         let copy = D3D12_RESOURCE_STATE_COPY_SOURCE;
         list.ResourceBarrier(&[crate::host::transition(texture, state, copy)]);
         let read = read_back(&host.device, list, texture);
