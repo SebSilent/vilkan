@@ -94,3 +94,29 @@ structural fact that the page fault persists after the change.
 do it for the async-pipeline/caching infrastructure and the type-105 dispatch,
 budgeting ~1 day and re-testing the capture path; treat the dark world as a
 separate, still-open blocker.
+
+## Per-draw oracle capture cannot reach the content frame (accepted wall)
+
+The plan to exploit a frame-256 content draw for a native-backend replay was
+attempted twice and abandoned; the numbers below are the evidence.
+
+- Scanning all 40935 previously captured draw records found **zero fully
+  descriptor-free late draws**: every draw carries a `Table` or `View` root.
+  The simplest is the View-only fullscreen pass (VS `dfafaf38` / PS `06295fb1`,
+  frame 256 ≈ ordinal 1816), which needs no bindless descriptor set.
+- Two capture runs (the second minimal: only the View-only draw, one oracle
+  per frame over frames 250–274) produced **only frame-250 oracles, every one
+  uniform black**: 33177600 bytes, exactly 2 distinct byte values (0 and 255),
+  0 of 8294400 pixels differing from the first.
+- The run crashes at **frame ~251** — the title's null-write
+  `0xc0000005` at `victory-image…+0x2215c35` (write `0x0`), the dropped-dispatch
+  blocker — **before** the frame-256 content appears. Under capture the crash
+  arrives earlier than the uninstrumented run (which reached frame ~1140).
+- Consequently no non-uniform oracle was ever captured, and no replay/error
+  figure exists. The frame-256 content seen in an earlier presented-frame
+  capture is not reachable through the per-draw readback path.
+
+**Decision:** accept this wall. Do not spend further capture runs on it. The
+native backend proceeds from the backend-neutral capture already built, using
+the existing (uniform) records as structural input and the ad-hoc replay's
+output as the numeric reference, not a freshly captured content oracle.
