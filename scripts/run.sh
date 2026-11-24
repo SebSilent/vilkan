@@ -29,12 +29,12 @@ VILKAN_DATA="${VILKAN_DATA:-$ROOT/vilkan-data}"
 PROFILE="${PROFILE:-release}"
 EXE="$HERE/target/x86_64-pc-windows-msvc/$PROFILE/vilkan.exe"
 
-# The title folder: from the environment, else from vilkan.toml ([paths].game_dir).
+# The title folder: from the environment, else from victory.toml ([paths].game_dir).
 GAME_DIR="${GAME_DIR:-${VILKAN_GAME_DIR:-}}"
-if [[ -z "$GAME_DIR" && -f "$HERE/vilkan.toml" ]]; then
-  GAME_DIR="$(sed -nE "s/^[[:space:]]*game_dir[[:space:]]*=[[:space:]]*['\"]?([^'\"]+)['\"]?.*/\1/p" "$HERE/vilkan.toml" | head -1)"
+if [[ -z "$GAME_DIR" && -f "$HERE/victory.toml" ]]; then
+  GAME_DIR="$(sed -nE "s/^[[:space:]]*game_dir[[:space:]]*=[[:space:]]*['\"]?([^'\"]+)['\"]?.*/\1/p" "$HERE/victory.toml" | head -1)"
 fi
-[[ -n "$GAME_DIR" ]] || { echo "set GAME_DIR (or VILKAN_GAME_DIR, or [paths].game_dir in vilkan.toml) to the title's folder" >&2; exit 1; }
+[[ -n "$GAME_DIR" ]] || { echo "set GAME_DIR (or VILKAN_GAME_DIR, or [paths].game_dir in victory.toml) to the title's folder" >&2; exit 1; }
 [[ -d "$GAME_DIR" ]] || { echo "GAME_DIR is not a directory: $GAME_DIR" >&2; exit 1; }
 
 # The title executable: explicit override, else the single .exe in GAME_DIR.
@@ -60,10 +60,12 @@ export PROTON_LOG_DIR="$VILKAN_DATA"
 # Proton only opens its debug log when SteamGameId is set.
 export SteamGameId="${SteamGameId:-0}"
 export SteamAppId="${SteamAppId:-0}"
-export VILKAN_GAME_DIR="$(winpath "$GAME_DIR")"
-export VILKAN_CACHE_DIR="$(winpath "$VILKAN_DATA/cache")"
-export VILKAN_DATA_DIR="$(winpath "$VILKAN_DATA/data")"
-export VILKAN_LOG="${VILKAN_LOG:-info}"
+# Our user-facing vars (VILKAN_GAME_DIR / VILKAN_DATA / VILKAN_LOG) feed the
+# upstream-derived loader, which reads VICTORY_* (kept for merge-ability).
+export VICTORY_GAME_DIR="$(winpath "$GAME_DIR")"
+export VICTORY_CACHE_DIR="$(winpath "$VILKAN_DATA/cache")"
+export VICTORY_DATA_DIR="$(winpath "$VILKAN_DATA/data")"
+export VICTORY_LOG="${VILKAN_LOG:-info}"
 export VKD3D_DEBUG="${VKD3D_DEBUG:-warn}"
 export DXVK_LOG_LEVEL="${DXVK_LOG_LEVEL:-warn}"
 

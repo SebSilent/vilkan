@@ -1,0 +1,72 @@
+VIlkan — NOTICE / CREDITS
+=========================
+
+VIlkan is built on VIctory, an Xbox Series X|S → Windows compatibility layer
+(the title's x86-64 code runs natively; the platform is supplied underneath it).
+We add our own Linux runtime and wave64 work, and a native Vulkan translation
+path. This file names what is upstream, what we changed, and what is ours.
+
+Upstream: VIctory
+-----------------
+The library crates are upstream VIctory, kept under their original names so we
+can keep pulling upstream updates:
+
+    crates/victory-core      config, asset-policy guard, logging
+    crates/victory-pe        PE32+ / import-library analysis
+    crates/victory-loader    prepare, map, bind, start the title image
+    crates/victory-hle       console API implementations (HLE)
+    crates/victory-gpu       D3D12.X objects / command lists → host D3D12
+    crates/victory-shader    Xbox shader containers → host shaders
+    crates/victory-formats   texture layouts, audio codecs, BCPack
+    crates/victory-pipeline  converter trait, content-addressed cache
+    crates/victory-game      title-specific formats / build identities
+
+Upstream configuration and marker files keep their names: `victory.toml`,
+`victory.example.toml`, `.victory-root`. The upstream environment variables
+(`VICTORY_GAME_DIR`, `VICTORY_CACHE_DIR`, `VICTORY_DATA_DIR`, `VICTORY_LOG`,
+`VICTORY_CONFIG`, …) are read by the upstream-derived code unchanged.
+
+VIctory is GPL-3.0-or-later (see LICENSE). VIlkan is GPL-3.0-or-later; derived
+portions are GPL-compatible under it.
+
+What we changed in upstream-derived files
+-----------------------------------------
+Functional changes (kept; identifiers reverted to upstream names):
+
+  * victory-shader: a backend-neutral wave64→wave32 exchange
+    (`emit/exchange.rs`, ours) wired into `emit/lower.rs` and `emit/mod.rs`,
+    with a host wave-width gate. This is the DXIL/Proton path's wave64 fix.
+  * victory-gpu: a host wave-width query (`host.rs`) and a refused-shader dump
+    (`pipeline/host.rs`); our window title/class and adapter strings (VIlkan).
+  * victory-formats: BCPack tables loaded from outside the tree
+    (`VILKAN_BCPACK_TABLES`), since the BC6H/BC7 history is game-derived.
+  * xtask: the asset policy runs with zero exceptions; `.py` is allowlisted.
+
+Everything else in the upstream-derived crates is upstream code, restored
+byte-identical from our fork base, with only the game-name scrub applied
+(see scripts/scrub.py).
+
+What is ours (branded VIlkan)
+-----------------------------
+  * apps/vilkan            the command-line front end / binary (vilkan.exe)
+  * crates/vilkan-vk       Linux-native Vulkan runtime (ash): device, pipelines,
+                           dispatch of sidecar-compiled SPIR-V — no Proton/D3D12
+  * crates/victory-shader/src/emit/exchange.rs (+ tests)  the wave64 exchange
+  * crates/victory-shader/examples/extract-native.rs      native-code extractor
+  * scripts/               build.sh, run.sh, compile-native.py, scrub.py
+  * docs/                  linux-proton.md, native-vulkan.md, wave64-exchange.md,
+                           architecture.md, asset-policy.md
+  * our environment variables: VILKAN_DATA, VILKAN_GAME_DIR, VILKAN_TITLE_EXE,
+    VILKAN_SHADER_FIXTURES, VILKAN_BCPACK_TABLES, VILKAN_VK_FIXTURES, VILKAN_LOG
+
+The native Vulkan path consumes SPIR-V compiled offline by a clean-room RDNA2
+translator sidecar (see LOCAL-NOTES.md, untracked, for provenance and license
+position). We do not port that translator or write our own IR→SPIR-V emitter.
+
+Game-name scrub and asset policy
+--------------------------------
+The supported title is referred to only as "Cuck Simulator Miami" (CSM). The
+real game name, publisher, release/scene tags and title-identifying strings are
+stripped by scripts/scrub.py (idempotent, re-run after every upstream sync).
+Nothing game-derived is tracked; the asset policy runs with zero exceptions.
+See docs/asset-policy.md and docs/sync.md.

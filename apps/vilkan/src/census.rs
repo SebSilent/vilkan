@@ -5,9 +5,9 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use vilkan_hle::{HleResolver, HostPolicy};
-use vilkan_loader::Provenance;
-use vilkan_pe::{ImageInfo, ImportSymbol};
+use victory_hle::{HleResolver, HostPolicy};
+use victory_loader::Provenance;
+use victory_pe::{ImageInfo, ImportSymbol};
 
 #[derive(Default)]
 struct DllStats {

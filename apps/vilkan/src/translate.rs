@@ -7,13 +7,13 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::Result;
-use vilkan_shader::emit::host::{self, Host};
-use vilkan_shader::emit::{self, validator::Validator};
-use vilkan_shader::structure::{self, Atom, LaneExit};
-use vilkan_shader::{
+use victory_shader::emit::host::{self, Host};
+use victory_shader::emit::{self, validator::Validator};
+use victory_shader::structure::{self, Atom, LaneExit};
+use victory_shader::{
     Container, FourCC, HwStage, NativeProgram, RootType, ShaderError, ir, native_programs,
 };
-use vilkan_shader::{io, resource};
+use victory_shader::{io, resource};
 
 use crate::shader::{MAX_FILE, Source, sources};
 
@@ -613,7 +613,7 @@ fn tally_resources(p: &NativeProgram, r: &resource::Resources, t: &mut Tally) {
         .filter(|u| u.root == RootType::ImmediateSampler)
         .count();
     let samplers_match = !values.is_empty() && values.len() <= immediate;
-    let matched = |u: &&vilkan_shader::UsedResource| {
+    let matched = |u: &&victory_shader::UsedResource| {
         if u.root == RootType::ImmediateSampler {
             samplers_match
         } else {

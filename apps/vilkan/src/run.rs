@@ -13,25 +13,25 @@ pub fn run(
     console: Console,
 ) -> Result<()> {
     use std::sync::Arc;
-    use vilkan_hle::{HleResolver, HostPolicy};
-    use vilkan_loader::{BindReport, UnimplementedPolicy, WithTitleDlls};
+    use victory_hle::{HleResolver, HostPolicy};
+    use victory_loader::{BindReport, UnimplementedPolicy, WithTitleDlls};
 
     // A title that relaunched itself: the old process must be gone first.
-    vilkan_hle::modules::lifecycle::wait_for_previous();
-    let cfg = vilkan_core::Config::load()?;
+    victory_hle::modules::lifecycle::wait_for_previous();
+    let cfg = victory_core::Config::load()?;
     let original = std::fs::read(exe).with_context(|| format!("reading {}", exe.display()))?;
-    let prepared = vilkan_loader::prepare(&original)?;
+    let prepared = victory_loader::prepare(&original)?;
     let hash = prepared.original_hash.to_hex();
-    match vilkan_game::identify(&hash) {
+    match victory_game::identify(&hash) {
         Some(build) => println!("build          {} ({hash})", build.label),
         None => println!("build          unknown ({hash})"),
     }
 
     let images = cfg.cache_subdir("images")?;
-    vilkan_hle::modules::d3d12x::use_shader_cache(cfg.cache_subdir("shaders")?);
-    let image = vilkan_loader::load(&prepared, &images)?;
-    vilkan_hle::runtime::set_main_image(image.base());
-    vilkan_hle::runtime::set_image_path(image.base(), exe);
+    victory_hle::modules::d3d12x::use_shader_cache(cfg.cache_subdir("shaders")?);
+    let image = victory_loader::load(&prepared, &images)?;
+    victory_hle::runtime::set_main_image(image.base());
+    victory_hle::runtime::set_image_path(image.base(), exe);
     println!(
         "mapped at      {:#x} (preferred {:#x})",
         image.base(),
@@ -47,7 +47,7 @@ pub fn run(
     // A missing manifest leaves id 0 and no storage quota.
     let manifest =
         std::fs::read_to_string(title_dir.join("MicrosoftGame.config")).unwrap_or_default();
-    let title = vilkan_hle::runtime::Title::from_manifest(&manifest);
+    let title = victory_hle::runtime::Title::from_manifest(&manifest);
     let storage = cfg.data_subdir(&format!("{:08X}/storage", title.id))?;
     println!(
         "title          {:08X}, storage {} ({} MB)",
@@ -56,19 +56,19 @@ pub fn run(
         title.storage_bytes >> 20
     );
     // The console's fixed drives: the package as `G:`, temporary files `T:`.
-    vilkan_hle::modules::files::mount_at('G', title_dir);
+    victory_hle::modules::files::mount_at('G', title_dir);
     let temp = cfg.data_subdir(&format!("{:08X}/temp", title.id))?;
-    vilkan_hle::modules::files::mount_at('T', &temp);
-    vilkan_hle::runtime::set_title(vilkan_hle::runtime::Title { storage, ..title });
-    vilkan_hle::console::set(match console {
-        Console::SeriesX => vilkan_hle::console::Console::SeriesX,
-        Console::SeriesS => vilkan_hle::console::Console::SeriesS,
+    victory_hle::modules::files::mount_at('T', &temp);
+    victory_hle::runtime::set_title(victory_hle::runtime::Title { storage, ..title });
+    victory_hle::console::set(match console {
+        Console::SeriesX => victory_hle::console::Console::SeriesX,
+        Console::SeriesS => victory_hle::console::Console::SeriesS,
     });
-    println!("console        {}", vilkan_hle::console::current().name());
-    let dlls = vilkan_loader::load_title_dlls(image.info(), title_dir, &images, &wanted)?;
+    println!("console        {}", victory_hle::console::current().name());
+    let dlls = victory_loader::load_title_dlls(image.info(), title_dir, &images, &wanted)?;
     for (name, dll) in &dlls {
         println!("title dll      {name} at {:#x}", dll.base());
-        vilkan_hle::runtime::set_image_path(dll.base(), &title_dir.join(name));
+        victory_hle::runtime::set_image_path(dll.base(), &title_dir.join(name));
     }
 
     let policy = match unimplemented {
@@ -100,9 +100,9 @@ pub fn run(
         println!("not executing (pass --execute to start the title)");
         return Ok(());
     }
-    vilkan_loader::report_crashes();
-    vilkan_loader::log_crashes_to(temp.with_file_name("crashes.log"));
-    vilkan_hle::runtime::use_console_timers();
+    victory_loader::report_crashes();
+    victory_loader::log_crashes_to(temp.with_file_name("crashes.log"));
+    victory_hle::runtime::use_console_timers();
     #[cfg(feature = "diagnostics")]
     diagnostics(&image, &cfg);
     let late = LateDlls {
@@ -113,7 +113,7 @@ pub fn run(
         mapped: std::sync::Mutex::new(dlls.clone()),
         lock: LoaderLock::default(),
     };
-    vilkan_hle::runtime::set_title_dll_loader(Box::new(move |file| {
+    victory_hle::runtime::set_title_dll_loader(Box::new(move |file| {
         late.load(file, show).map_err(|e| format!("{e:#}"))
     }));
     // SAFETY: imports are bound; from here on we run title code.
@@ -128,16 +128,16 @@ pub fn run(
 /// The debugging aids (README): scheduled stack dumps, watched values and
 /// memory saved on a crash.
 #[cfg(all(windows, feature = "diagnostics"))]
-fn diagnostics(image: &vilkan_loader::LoadedImage, cfg: &vilkan_core::Config) {
-    vilkan_loader::dump_stacks_on_schedule();
-    vilkan_hle::modules::audio::capture::start();
+fn diagnostics(image: &victory_loader::LoadedImage, cfg: &victory_core::Config) {
+    victory_loader::dump_stacks_on_schedule();
+    victory_hle::modules::audio::capture::start();
     watch(image.base(), image.info().size_of_image as usize);
     // Debugging aid: `VILKAN_CRASH_SAVE=<rva>:<len>,...` (hex) writes those
     // title ranges to `crash-<rva>.bin` in the cache dir on a crash.
     let size = image.info().size_of_image as usize;
     let ranges = std::env::var("VILKAN_CRASH_SAVE").unwrap_or_default();
     let hex = |s: &str| usize::from_str_radix(s.trim().trim_start_matches("0x"), 16).ok();
-    vilkan_loader::save_on_crash(
+    victory_loader::save_on_crash(
         ranges
             .split(',')
             .filter_map(|r| r.split_once(':'))
@@ -181,20 +181,20 @@ fn watch(base: usize, size: usize) {
 
 /// DLLs the host or our runtime provide are never taken from the title.
 #[cfg(windows)]
-fn title_dll(host: &vilkan_hle::HostPolicy, dll: &str) -> bool {
-    !host.allows(dll) && !vilkan_hle::registry().iter().any(|m| m.serves(dll))
+fn title_dll(host: &victory_hle::HostPolicy, dll: &str) -> bool {
+    !host.allows(dll) && !victory_hle::registry().iter().any(|m| m.serves(dll))
 }
 
 /// Title DLLs the title loads itself (`LoadLibrary`) that nothing imports,
 /// e.g. Cuck Simulator Miami's upscaler behind its FidelityFX loader.
 #[cfg(windows)]
 struct LateDlls {
-    host: vilkan_hle::HostPolicy,
+    host: victory_hle::HostPolicy,
     title_dir: std::path::PathBuf,
     cache_dir: std::path::PathBuf,
-    policy: vilkan_loader::UnimplementedPolicy,
+    policy: victory_loader::UnimplementedPolicy,
     /// Every title DLL mapped so far, to bind new ones against.
-    mapped: std::sync::Mutex<Vec<(String, vilkan_loader::LoadedImage)>>,
+    mapped: std::sync::Mutex<Vec<(String, victory_loader::LoadedImage)>>,
     lock: LoaderLock,
 }
 
@@ -207,9 +207,9 @@ impl LateDlls {
     fn load(
         &self,
         file: &str,
-        show: impl Fn(&str, vilkan_loader::BindReport),
+        show: impl Fn(&str, victory_loader::BindReport),
     ) -> Result<Option<usize>> {
-        use vilkan_hle::runtime::{forget_image, image_named, set_image_path};
+        use victory_hle::runtime::{forget_image, image_named, set_image_path};
         // Waits while another thread initialises a DLL; a `DllMain` that
         // loads another DLL re-enters.
         self.lock.hold(|| {
@@ -219,18 +219,18 @@ impl LateDlls {
             let new = {
                 let mut mapped = self.mapped.lock().unwrap_or_else(|e| e.into_inner());
                 let wanted = |dll: &str| title_dll(&self.host, dll) && image_named(dll).is_none();
-                let new = vilkan_loader::load_title_dll(
+                let new = victory_loader::load_title_dll(
                     file,
                     &self.title_dir,
                     &self.cache_dir,
                     &wanted,
                 )?;
-                let hle = vilkan_hle::HleResolver::new(self.host.clone());
-                let old = vilkan_loader::WithTitleDlls {
+                let hle = victory_hle::HleResolver::new(self.host.clone());
+                let old = victory_loader::WithTitleDlls {
                     inner: &hle,
                     dlls: &mapped,
                 };
-                let resolver = vilkan_loader::WithTitleDlls {
+                let resolver = victory_loader::WithTitleDlls {
                     inner: &old,
                     dlls: &new,
                 };

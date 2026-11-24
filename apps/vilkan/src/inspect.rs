@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use vilkan_pe::implib::ImportLibrary;
-use vilkan_pe::{ImageInfo, layout};
+use victory_pe::implib::ImportLibrary;
+use victory_pe::{ImageInfo, layout};
 
 pub fn run(file: &Path, list_imports: bool, list_exports: bool) -> Result<()> {
     let data = std::fs::read(file).with_context(|| format!("reading {}", file.display()))?;

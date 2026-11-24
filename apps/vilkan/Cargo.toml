@@ -8,12 +8,12 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-vilkan-core.workspace = true
-vilkan-pe.workspace = true
-vilkan-loader.workspace = true
-vilkan-hle.workspace = true
-vilkan-shader = { workspace = true, features = ["host"] }
-vilkan-game.workspace = true
+victory-core.workspace = true
+victory-pe.workspace = true
+victory-loader.workspace = true
+victory-hle.workspace = true
+victory-shader = { workspace = true, features = ["host"] }
+victory-game.workspace = true
 anyhow.workspace = true
 blake3.workspace = true
 memchr.workspace = true
@@ -24,10 +24,10 @@ walkdir.workspace = true
 # Debug-level logs and the debugging switches (frame capture, stack dumps,
 # the host debug layer, scripted keys). Off in a plain release build.
 diagnostics = [
-    "vilkan-core/diagnostics",
-    "vilkan-hle/diagnostics",
-    "vilkan-loader/diagnostics",
-    "vilkan-shader/diagnostics",
+    "victory-core/diagnostics",
+    "victory-hle/diagnostics",
+    "victory-loader/diagnostics",
+    "victory-shader/diagnostics",
 ]
 
 [lints]

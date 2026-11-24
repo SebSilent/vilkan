@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use vilkan_game::sgd5;
-use vilkan_shader::gfx10::{self, Instruction};
-use vilkan_shader::{Container, DxilProgram, FourCC, HwStage, ShaderError, native_programs};
+use victory_game::sgd5;
+use victory_shader::gfx10::{self, Instruction};
+use victory_shader::{Container, DxilProgram, FourCC, HwStage, ShaderError, native_programs};
 
 /// Files above this size are skipped (read whole into memory for now).
 pub(crate) const MAX_FILE: u64 = 2 << 30;

@@ -25,7 +25,7 @@ Proton, no D3D12. We get there in two stages:
    commands and replays them on Vulkan, with the console GPU code recompiled
    straight to SPIR-V. This drops Proton entirely.
 
-The **wave64 exchange** (`crates/vilkan-shader/src/emit/exchange.rs`) is
+The **wave64 exchange** (`crates/victory-shader/src/emit/exchange.rs`) is
 **backend-neutral**: it emits no subgroup operations and derives lanes from
 the workgroup-local index, so the same planner, slot layout and protocol
 lower to DXIL today and will be **reused unchanged by the SPIR-V emitter**.
@@ -45,14 +45,24 @@ validated wave64-emulated SPIR-V from the real header metadata. See
 [docs/native-vulkan.md](docs/native-vulkan.md) for the contract and the
 remaining blur-dispatch step (the bindless descriptor heap).
 
-## Naming and merge-ability
+## Built on VIctory
 
-VIlkan began as a fork of an upstream Xbox compatibility layer. To keep the
-tree free of title and upstream branding, **everything we own is named
-VIlkan**: the library crates (`vilkan-core`, `vilkan-shader`, `vilkan-gpu`,
-…), the app crate/binary (`vilkan.exe`), the `VILKAN_*` environment variables,
-the `vilkan.toml` config file and the `.vilkan-root` asset-policy marker.
-Merges from upstream are reconciled by hand against this naming.
+**VIlkan is built on [VIctory](https://github.com/raffclar/victory)**, an Xbox
+Series X|S → Windows compatibility layer, with **our own Linux runtime and
+wave64 work** and a **native Vulkan translation path**. See [NOTICE](NOTICE)
+for what is upstream, what we changed, and what is ours.
+
+To keep pulling upstream updates, the **library crates keep their upstream
+names** (`victory-core`, `victory-shader`, `victory-gpu`, …), as do the upstream
+config/marker files (`victory.toml`, `.victory-root`) and the upstream
+`VICTORY_*` environment variables the code reads. **Everything we own is named
+VIlkan**: the app crate/binary (`vilkan.exe`), the native Vulkan runtime
+(`vilkan-vk`), the wave64 exchange, our window/adapter strings and log
+prefixes, our scripts and docs, and our own environment variables
+(`VILKAN_DATA`, `VILKAN_GAME_DIR`, `VILKAN_TITLE_EXE`, `VILKAN_SHADER_FIXTURES`,
+`VILKAN_BCPACK_TABLES`, `VILKAN_VK_FIXTURES`). `scripts/run.sh` bridges our
+user-facing variables to the upstream ones. The sync workflow is in
+[docs/sync.md](docs/sync.md).
 
 ## Publishing
 
@@ -76,7 +86,7 @@ scripts/run.sh                      # boots the title under Proton Experimental
 ```
 
 The title path and data dir come from config/env: `GAME_DIR` (or
-`VILKAN_GAME_DIR`, or `[paths].game_dir` in `vilkan.toml`), and `VILKAN_DATA`
+`VILKAN_GAME_DIR`, or `[paths].game_dir` in `victory.toml`), and `VILKAN_DATA`
 for the prefix/cache/data root (default `../vilkan-data`, **outside** the
 repo). `scripts/run.sh` finds the title executable in `GAME_DIR` (or takes
 `VILKAN_TITLE_EXE`). Game-derived data never lives in the tree.
@@ -98,7 +108,7 @@ binary under Proton; Shader Model 6.6 and mesh shaders for the world), Rust
 
 ```sh
 cargo xtask install-hooks                # asset-policy check on every commit
-cp vilkan.example.toml vilkan.toml       # then set your paths (outside the repo)
+cp victory.example.toml victory.toml       # then set your paths (outside the repo)
 cargo test --workspace                   # needs no game data
 cargo run -p vilkan -- config            # check your paths
 ```
@@ -143,7 +153,7 @@ vilkan run <exe> [--execute] [--unimplemented trap|zero] [--strict]
 vilkan config
 ```
 
-Logging: `VILKAN_LOG=vilkan_loader=trace,info` (a release build logs info and
+Logging: `VICTORY_LOG=victory_loader=trace,info` (a release build logs info and
 above).
 
 ## Debugging
@@ -156,18 +166,18 @@ cargo build --profile diag -p vilkan --features diagnostics
 
 | Variable | Effect |
 |----------|--------|
-| `VILKAN_LOG=<target>=debug,...` | debug and trace output |
-| `VILKAN_STACKS=20,60` | every thread's stack at those seconds |
-| `VILKAN_WATCH=<rva>,...` | logs a title u32 when it changes |
-| `VILKAN_KEYS=30:Enter,35:X` | presses keys at those seconds, focus or not |
-| `VILKAN_CRASH_SAVE=<rva>:<len>,...` | saves title memory to the cache folder on a crash |
-| `VILKAN_CAPTURE=<dir>` | saves presented frames |
-| `VILKAN_DUMP_TARGETS=1` | with the above, saves every render target of those frames |
-| `VILKAN_D3D12_DEBUG=1` | host debug layer |
-| `VILKAN_INDIRECT=1` | runs the title's indirect draws and dispatches |
-| `VILKAN_D3D12_GBV=1` | with the above, GPU-based validation |
+| `VICTORY_LOG=<target>=debug,...` | debug and trace output |
+| `VICTORY_STACKS=20,60` | every thread's stack at those seconds |
+| `VICTORY_WATCH=<rva>,...` | logs a title u32 when it changes |
+| `VICTORY_KEYS=30:Enter,35:X` | presses keys at those seconds, focus or not |
+| `VICTORY_CRASH_SAVE=<rva>:<len>,...` | saves title memory to the cache folder on a crash |
+| `VICTORY_CAPTURE=<dir>` | saves presented frames |
+| `VICTORY_DUMP_TARGETS=1` | with the above, saves every render target of those frames |
+| `VICTORY_D3D12_DEBUG=1` | host debug layer |
+| `VICTORY_INDIRECT=1` | runs the title's indirect draws and dispatches |
+| `VICTORY_D3D12_GBV=1` | with the above, GPU-based validation |
 | `VILKAN_D3D12_DRED=1` | on a GPU failure, the allocation hit and commands in flight |
-| `VILKAN_D3D12_WARP=1` | host device on the software adapter |
+| `VICTORY_D3D12_WARP=1` | host device on the software adapter |
 | `VILKAN_AUDIO_CAPTURE=<file.wav>` | records what the title plays |
 | `VILKAN_XMA_DUMP=<dir>` | saves the first XMA voices' context and input |
 

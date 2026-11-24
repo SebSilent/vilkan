@@ -21,11 +21,12 @@ const ALLOWED_NAMES: &[&str] = &[
     ".gitignore",
     ".gitattributes",
     ".editorconfig",
-    ".vilkan-root",
+    ".victory-root",
     "pre-commit",
     "LICENSE",
     "LICENSE-MIT",
     "LICENSE-APACHE",
+    "NOTICE",
 ];
 
 /// Paths explicitly exempted, with a reason. Keep this empty if at all possible.

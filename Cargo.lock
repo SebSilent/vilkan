@@ -650,24 +650,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
-name = "vilkan"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "blake3",
- "clap",
- "memchr",
- "vilkan-core",
- "vilkan-game",
- "vilkan-hle",
- "vilkan-loader",
- "vilkan-pe",
- "vilkan-shader",
- "walkdir",
-]
-
-[[package]]
-name = "vilkan-core"
+name = "victory-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -679,11 +662,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "vilkan-formats"
+name = "victory-formats"
 version = "0.1.0"
 
 [[package]]
-name = "vilkan-game"
+name = "victory-game"
 version = "0.1.0"
 dependencies = [
  "memchr",
@@ -691,7 +674,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "vilkan-gpu"
+name = "victory-gpu"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -699,32 +682,32 @@ dependencies = [
  "miniz_oxide",
  "tempfile",
  "tracing",
- "vilkan-formats",
- "vilkan-pipeline",
- "vilkan-shader",
+ "victory-formats",
+ "victory-pipeline",
+ "victory-shader",
  "windows",
  "windows-sys",
 ]
 
 [[package]]
-name = "vilkan-hle"
+name = "victory-hle"
 version = "0.1.0"
 dependencies = [
  "miniz_oxide",
  "opus-pure",
  "tempfile",
  "tracing",
- "vilkan-formats",
- "vilkan-gpu",
- "vilkan-loader",
- "vilkan-pe",
+ "victory-formats",
+ "victory-gpu",
+ "victory-loader",
+ "victory-pe",
  "windows",
  "windows-core",
  "windows-sys",
 ]
 
 [[package]]
-name = "vilkan-loader"
+name = "victory-loader"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -732,13 +715,13 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tracing",
- "vilkan-core",
- "vilkan-pe",
+ "victory-core",
+ "victory-pe",
  "windows-sys",
 ]
 
 [[package]]
-name = "vilkan-pe"
+name = "victory-pe"
 version = "0.1.0"
 dependencies = [
  "object",
@@ -746,18 +729,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "vilkan-pipeline"
+name = "victory-pipeline"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "blake3",
  "tempfile",
  "tracing",
- "vilkan-core",
+ "victory-core",
 ]
 
 [[package]]
-name = "vilkan-shader"
+name = "victory-shader"
 version = "0.1.0"
 dependencies = [
  "miniz_oxide",
@@ -765,6 +748,23 @@ dependencies = [
  "tracing",
  "windows",
  "windows-sys",
+]
+
+[[package]]
+name = "vilkan"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "clap",
+ "memchr",
+ "victory-core",
+ "victory-game",
+ "victory-hle",
+ "victory-loader",
+ "victory-pe",
+ "victory-shader",
+ "walkdir",
 ]
 
 [[package]]

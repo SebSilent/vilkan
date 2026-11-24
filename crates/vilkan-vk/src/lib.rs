@@ -11,6 +11,8 @@
 use anyhow::{Context as _, Result, bail};
 use ash::vk;
 
+pub mod bindless;
+
 /// The push-constant block: s0..s31, heap base, code base (36 dwords = 144 B).
 pub const PC_BYTES: usize = 144;
 /// The output V# (s[0:3]): base 0, stride 0, num_records max, OOB_SELECT 3 (raw).
@@ -25,7 +27,7 @@ pub struct Context {
     pub queue_family: u32,
     pub subgroup_size: u32,
     pub device_name: String,
-    mem_props: vk::PhysicalDeviceMemoryProperties,
+    pub(crate) mem_props: vk::PhysicalDeviceMemoryProperties,
 }
 
 impl Context {
@@ -91,10 +93,24 @@ impl Context {
         if f12q.buffer_device_address != vk::TRUE {
             bail!("device lacks bufferDeviceAddress (needed for the heap)");
         }
+        // Descriptor indexing for the bindless set lives on Vulkan12Features
+        // (runtime arrays of images / samplers / storage images, partially
+        // bound, update-after-bind).
         let mut f12 = vk::PhysicalDeviceVulkan12Features::default()
-            .buffer_device_address(true);
+            .buffer_device_address(true)
+            .runtime_descriptor_array(true)
+            .descriptor_binding_variable_descriptor_count(true)
+            .descriptor_binding_partially_bound(true)
+            .descriptor_binding_sampled_image_update_after_bind(true)
+            .descriptor_binding_storage_image_update_after_bind(true)
+            .descriptor_binding_storage_buffer_update_after_bind(true)
+            .shader_sampled_image_array_non_uniform_indexing(true)
+            .shader_storage_image_array_non_uniform_indexing(true)
+            .shader_storage_buffer_array_non_uniform_indexing(true);
         let mut f2 = vk::PhysicalDeviceFeatures2::default().push_next(&mut f12);
         f2.features.shader_int64 = vk::TRUE;
+        f2.features.shader_storage_image_array_dynamic_indexing = vk::TRUE;
+        f2.features.shader_sampled_image_array_dynamic_indexing = vk::TRUE;
 
         let dev_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&qci)
@@ -113,7 +129,7 @@ impl Context {
         })
     }
 
-    fn mem_type(&self, type_bits: u32, flags: vk::MemoryPropertyFlags) -> Result<u32> {
+    pub(crate) fn mem_type(&self, type_bits: u32, flags: vk::MemoryPropertyFlags) -> Result<u32> {
         for i in 0..self.mem_props.memory_type_count {
             let suitable = type_bits & (1 << i) != 0
                 && self.mem_props.memory_types[i as usize].property_flags.contains(flags);
@@ -252,7 +268,7 @@ pub struct Heap<'a> {
     buffer: vk::Buffer,
     memory: vk::DeviceMemory,
     pub address: u64,
-    ptr: *mut u8,
+    pub(crate) ptr: *mut u8,
     pub size: usize,
     device: &'a ash::Device,
 }

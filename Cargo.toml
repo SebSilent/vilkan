@@ -13,15 +13,15 @@ publish = false
 
 [workspace.dependencies]
 # Internal crates
-vilkan-core = { path = "crates/vilkan-core" }
-vilkan-pe = { path = "crates/vilkan-pe" }
-vilkan-loader = { path = "crates/vilkan-loader" }
-vilkan-hle = { path = "crates/vilkan-hle" }
-vilkan-gpu = { path = "crates/vilkan-gpu" }
-vilkan-shader = { path = "crates/vilkan-shader" }
-vilkan-formats = { path = "crates/vilkan-formats" }
-vilkan-pipeline = { path = "crates/vilkan-pipeline" }
-vilkan-game = { path = "crates/vilkan-game" }
+victory-core = { path = "crates/victory-core" }
+victory-pe = { path = "crates/victory-pe" }
+victory-loader = { path = "crates/victory-loader" }
+victory-hle = { path = "crates/victory-hle" }
+victory-gpu = { path = "crates/victory-gpu" }
+victory-shader = { path = "crates/victory-shader" }
+victory-formats = { path = "crates/victory-formats" }
+victory-pipeline = { path = "crates/victory-pipeline" }
+victory-game = { path = "crates/victory-game" }
 
 # External crates
 anyhow = "1.0.104"

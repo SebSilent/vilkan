@@ -122,10 +122,10 @@ enum Console {
 }
 
 fn main() -> Result<()> {
-    vilkan_core::logging::init("info");
+    victory_core::logging::init("info");
     // The audio recorder `run` starts for `VILKAN_AUDIO_CAPTURE`.
     #[cfg(all(windows, feature = "diagnostics"))]
-    if vilkan_hle::modules::audio::capture::child() {
+    if victory_hle::modules::audio::capture::child() {
         return Ok(());
     }
     let cli = Cli::parse();
@@ -166,7 +166,7 @@ fn main() -> Result<()> {
 }
 
 fn show_config() -> Result<()> {
-    let cfg = vilkan_core::Config::load()?;
+    let cfg = victory_core::Config::load()?;
     let status = |p: &Option<PathBuf>| match p {
         Some(p) if p.exists() => format!("{}", p.display()),
         Some(p) => format!("{}  (does not exist)", p.display()),
@@ -189,7 +189,7 @@ fn show_config() -> Result<()> {
         .chain(&cfg.test_titles)
         .chain([&cfg.cache_dir])
     {
-        if let Err(e) = vilkan_core::ensure_outside_repo(p) {
+        if let Err(e) = victory_core::ensure_outside_repo(p) {
             println!("POLICY VIOLATION: {e}");
         }
     }
@@ -201,7 +201,7 @@ pub(crate) fn default_paths(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
     if !paths.is_empty() {
         return Ok(paths);
     }
-    let cfg = vilkan_core::Config::load()?;
+    let cfg = victory_core::Config::load()?;
     let all: Vec<PathBuf> = cfg.game_dir.into_iter().chain(cfg.test_titles).collect();
     anyhow::ensure!(
         !all.is_empty(),

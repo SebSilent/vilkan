@@ -1,5 +1,5 @@
 //! A stand-in for a title, written by us. It imports from DLLs that do not
-//! exist on a PC, which is exactly the situation vilkan-loader handles.
+//! exist on a PC, which is exactly the situation victory-loader handles.
 //! Loaded normally, this DLL would fail with "module not found".
 
 use std::ffi::c_void;
@@ -12,21 +12,21 @@ unsafe extern "system" {
     fn XGameRuntimeInitialize() -> i32;
 }
 
-#[link(name = "vilkan-probe-missing", kind = "raw-dylib")]
+#[link(name = "victory-probe-missing", kind = "raw-dylib")]
 unsafe extern "system" {
-    fn VIlkanProbeNotImplemented(x: u64) -> u64;
+    fn VIctoryProbeNotImplemented(x: u64) -> u64;
 }
 
 // A DLL the "title" ships; the test supplies a renamed copy of version.dll.
-#[link(name = "vilkan-probe-title", kind = "raw-dylib")]
+#[link(name = "victory-probe-title", kind = "raw-dylib")]
 unsafe extern "system" {
     fn GetFileVersionInfoSizeW(path: *const u16, handle: *mut u32) -> u32;
 }
 
 // Delay-loaded (see build.rs): bound through the delay-load table.
-#[link(name = "vilkan-probe-delayed", kind = "raw-dylib")]
+#[link(name = "victory-probe-delayed", kind = "raw-dylib")]
 unsafe extern "system" {
-    fn VIlkanProbeDelayed() -> u32;
+    fn VIctoryProbeDelayed() -> u32;
 }
 
 #[link(name = "kernel32")]
@@ -67,13 +67,13 @@ pub extern "system" fn probe_title() -> u32 {
 /// A delay-loaded console API.
 #[unsafe(no_mangle)]
 pub extern "system" fn probe_delayed() -> u32 {
-    unsafe { VIlkanProbeDelayed() }
+    unsafe { VIctoryProbeDelayed() }
 }
 
 /// Nobody implements this one: it must land in an unimplemented-import stub.
 #[unsafe(no_mangle)]
 pub extern "system" fn probe_missing() -> u64 {
-    unsafe { VIlkanProbeNotImplemented(42) }
+    unsafe { VIctoryProbeNotImplemented(42) }
 }
 
 static TLS_THREAD_STARTS: AtomicU32 = AtomicU32::new(0);
