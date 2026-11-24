@@ -20,6 +20,7 @@ The blob, its .json metadata and outputs are game-derived: keep them outside
 the repo (e.g. the external data dir). Nothing here is tracked.
 """
 import argparse
+import hashlib
 import json
 import os
 import struct
@@ -113,31 +114,52 @@ def main():
     disasm = work / "disasm"
     fssm = work / "fssm"
     spirv = out / "spirv"
-    for d in (disasm, fssm, spirv):
+    cache = out / "cache"
+    for d in (disasm, fssm, spirv, cache):
         d.mkdir(parents=True, exist_ok=True)
 
-    # 1. Disassemble the raw blob (shader_disasm falls back to the s_endpgm scan).
-    r = subprocess.run([sys.executable, "-I", str(tools / "shader_disasm.py"),
-                        a.blob, "--out", str(disasm)], capture_output=True, text=True)
-    sys.stderr.write(r.stdout + r.stderr)
-    src = disasm / f"{stem}.s"
-    if not src.exists():
-        sys.exit(f"disassembly produced no {src}")
-    # 2. Name it cs_ for the compute stage; FSSM sidecar from the real header.
-    (disasm / f"{name}.s").write_text(src.read_text())
-    src.unlink()
-    (fssm / f"{name}.fssm").write_bytes(compute_header(group, meta["rsrc2"], meta["wave64"]))
-
-    # 3. Translate with wave64 emulation; rdna2spirv validates with spirv-val.
-    r = subprocess.run([sys.executable, "-I", str(tools / "rdna2spirv.py"),
-                        str(disasm), "--out", str(spirv), "--wave64-emulate"])
-    if r.returncode:
-        sys.exit(r.returncode)
+    # Content-addressed cache key: the code AND the FSSM header metadata that
+    # affects translation (rsrc2, group, wave flag) AND the emulation marker.
+    # A code-only key would miss an rsrc2 correction; this does not.
+    key_src = json.dumps(
+        {"code_sha256": hashlib.sha256(Path(a.blob).read_bytes()).hexdigest(),
+         "rsrc2": meta["rsrc2"], "group": meta["group"], "wave64": meta["wave64"],
+         "mode": "wave64-emulate"},
+        sort_keys=True).encode()
+    key = hashlib.sha256(key_src).hexdigest()[:32]
+    cached_spv = cache / f"{key}.spv"
+    cached_index = cache / f"{key}.index.json"
     spv = spirv / f"{name}.spv"
-    if not spv.exists():
-        sys.exit(f"no validated SPIR-V at {spv}")
 
-    # 4. Loud post-check against the real header.
+    if cached_spv.exists() and cached_index.exists():
+        spv.write_bytes(cached_spv.read_bytes())
+        (spirv / "index.json").write_text(cached_index.read_text())
+        print(f"cache hit {key}")
+    else:
+        # 1. Disassemble the raw blob (shader_disasm falls back to the s_endpgm scan).
+        r = subprocess.run([sys.executable, "-I", str(tools / "shader_disasm.py"),
+                            a.blob, "--out", str(disasm)], capture_output=True, text=True)
+        sys.stderr.write(r.stdout + r.stderr)
+        src = disasm / f"{stem}.s"
+        if not src.exists():
+            sys.exit(f"disassembly produced no {src}")
+        # 2. Name it cs_ for the compute stage; FSSM sidecar from the real header.
+        (disasm / f"{name}.s").write_text(src.read_text())
+        src.unlink()
+        (fssm / f"{name}.fssm").write_bytes(compute_header(group, meta["rsrc2"], meta["wave64"]))
+
+        # 3. Translate with wave64 emulation; rdna2spirv validates with spirv-val.
+        r = subprocess.run([sys.executable, "-I", str(tools / "rdna2spirv.py"),
+                            str(disasm), "--out", str(spirv), "--wave64-emulate"])
+        if r.returncode:
+            sys.exit(r.returncode)
+        if not spv.exists():
+            sys.exit(f"no validated SPIR-V at {spv}")
+        cached_spv.write_bytes(spv.read_bytes())
+        cached_index.write_text((spirv / "index.json").read_text())
+        print(f"compiled {key}")
+
+    # 4. Loud post-check against the real header (always, even on a cache hit).
     index = json.loads((spirv / "index.json").read_text())
     check_result(spv, index, meta)
     print(f"SPIR-V: {spv}")
