@@ -1,3 +1,8 @@
+[![Discord — join the server](https://img.shields.io/badge/Discord-Join%20the%20server-5865F2?logo=discord&logoColor=white)](https://discord.gg/K7EGDqvxpF)
+
+**➤ Join the Discord: <https://discord.gg/K7EGDqvxpF>** — the place to talk, get
+access, and pick up work. See [CONTRIBUTING](CONTRIBUTING.md).
+
 # VIlkan — Cuck Simulator Miami (Xbox), native on Linux
 
 **VIlkan is built on [VIctory](https://github.com/raffclar/victory)** (the Xbox
