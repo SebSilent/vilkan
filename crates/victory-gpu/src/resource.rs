@@ -237,6 +237,30 @@ pub(crate) fn pc_format(format: u32) -> u32 {
     }
 }
 
+/// Whether a console format is a 16-bit colour target the PC driver refuses
+/// to render to with unordered access: 86 (B5G5R5A1) and 115 (B4G4R4A4).
+/// A 2560x1440 one with flags 0x5 comes back E_INVALIDARG.
+pub(crate) fn narrow_colour(format: u32) -> bool {
+    matches!(format, 86 | 115)
+}
+
+/// A render-target, view or clear format as the host has it: the narrow
+/// colour targets become RGBA8 (28) — the same values with more bits.
+/// A HOST-SIDE REINTERPRETATION: only GPU-owned copies are laid out for it;
+/// nothing of the CPU's is, and the pixels must be checked for garbling,
+/// not just counted. (Format facts cross-checked against a reference
+/// implementation's device tests; no code taken from it.)
+pub(crate) fn pc_target_format(format: u32) -> u32 {
+    if narrow_colour(format) { 28 } else { pc_format(format) }
+}
+
+/// Whether a title resource is a narrow colour target made RGBA8 on the host
+/// (its views must name RGBA8 too).
+pub(crate) fn narrow_target(this: crate::object::This) -> bool {
+    let r = resource(this);
+    narrow_colour(r.desc.format) && r.desc.flags & 5 != 0
+}
+
 /// The typeless format of a format's family (itself if it has none).
 pub(crate) fn family(format: u32) -> u32 {
     const FAMILIES: [(u32, u32); 22] = [
@@ -823,6 +847,11 @@ fn host_texture(
         d.flags &= !UNORDERED;
     }
     d.format = pc_format(d.format);
+    // The narrow colour targets the PC driver refuses with render-target or
+    // unordered use become RGBA8 (see pc_target_format).
+    if narrow_colour(desc.format) && d.flags & 5 != 0 {
+        d.format = 28;
+    }
     const DENY_SHADER_RESOURCE: u32 = 8;
     if d.flags & DENY_SHADER_RESOURCE == 0
         && let Some(&(_, typeless)) = DEPTH_FORMATS.iter().find(|&&(f, _)| f == d.format)
@@ -839,7 +868,7 @@ fn host_texture(
     let clear_value = (!clear.is_null()).then(|| {
         // SAFETY: the title passes a whole clear value.
         let mut value = unsafe { clear.cast::<[u32; 5]>().read_unaligned() };
-        value[0] = pc_format(value[0]);
+        value[0] = pc_target_format(value[0]);
         value
     });
     let heap = D3D12_HEAP_PROPERTIES {
@@ -1416,6 +1445,22 @@ mod tests {
             S_OK
         );
         heap
+    }
+
+    #[test]
+    fn narrow_colour_targets_become_rgba8() {
+        // The console's B5G5R5A1 (86) and B4G4R4A4 (115) render targets: the
+        // PC driver refuses them with RT/UAV use; RGBA8 (28) stands in.
+        assert_eq!(pc_target_format(86), 28);
+        assert_eq!(pc_target_format(115), 28);
+        // The depth family keeps its existing mapping; others pass through.
+        assert_eq!(pc_target_format(118), 45);
+        assert_eq!(pc_target_format(119), 46);
+        assert_eq!(pc_target_format(120), 47);
+        assert_eq!(pc_target_format(28), 28);
+        assert_eq!(pc_target_format(87), 87);
+        assert!(narrow_colour(86) && narrow_colour(115));
+        assert!(!narrow_colour(85) && !narrow_colour(28));
     }
 
     #[test]

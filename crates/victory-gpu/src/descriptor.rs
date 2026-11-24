@@ -229,6 +229,10 @@ impl RtvRecord {
             ]
         };
         words[0] = crate::resource::pc_format(words[0]);
+        // A narrow colour target made RGBA8 on the host: its views name RGBA8.
+        if crate::resource::narrow_target(self.resource) {
+            words[0] = 28;
+        }
         // SAFETY: both host view descriptions are 24 bytes in this layout.
         Some(unsafe { (&raw const words).cast::<T>().read_unaligned() })
     }
