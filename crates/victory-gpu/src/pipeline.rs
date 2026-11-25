@@ -4,7 +4,7 @@
 //! types.
 //!
 //! Host pipelines are made on a pipeline's first draw, not at creation:
-//! Chores Simulator Miami creates some 60,000 pipelines in its first 20
+//! The title creates some 60,000 pipelines in its first 20
 //! seconds and draws with a few dozen (decision 0007, step 3). Shader
 //! containers are shared by content hash and translated once, on first
 //! use (decision 0003).
@@ -74,6 +74,29 @@ impl std::fmt::Debug for Shader {
 /// Every container seen, by full content hash.
 static SHADERS: Mutex<Option<HashMap<[u8; 32], Arc<Shader>>>> = Mutex::new(None);
 
+/// For the memory lines: containers kept and their bytes, translations
+/// kept and the bytes of their host code. None of them is ever let go.
+static KEPT: [std::sync::atomic::AtomicU64; 4] = [const { std::sync::atomic::AtomicU64::new(0) }; 4];
+
+/// What the shader table and the pipeline library keep in memory:
+/// containers and their bytes, translations and their bytes, the bytes of
+/// the library's file (kept whole while the library lives) and what its
+/// last save wrote.
+#[cfg(windows)]
+#[cfg_attr(not(feature = "diagnostics"), allow(dead_code))]
+pub(crate) fn kept() -> [u64; 7] {
+    use std::sync::atomic::Ordering::Relaxed;
+    [
+        KEPT[0].load(Relaxed),
+        KEPT[1].load(Relaxed),
+        KEPT[2].load(Relaxed),
+        KEPT[3].load(Relaxed),
+        library::BLOB.load(Relaxed),
+        library::SAVED.load(Relaxed),
+        library::TRIMMED_BYTES.load(Relaxed),
+    ]
+}
+
 /// The shared container for `bytes`.
 fn shader(stage: &'static str, bytes: &[u8]) -> Arc<Shader> {
     let full = blake3::hash(bytes);
@@ -82,6 +105,8 @@ fn shader(stage: &'static str, bytes: &[u8]) -> Arc<Shader> {
         .get_or_insert_with(HashMap::new)
         .entry(*full.as_bytes())
         .or_insert_with(|| {
+            KEPT[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            KEPT[1].fetch_add(bytes.len() as u64, std::sync::atomic::Ordering::Relaxed);
             Arc::new(Shader {
                 stage,
                 hash: full.to_hex()[..16].to_owned(),
@@ -98,21 +123,34 @@ fn shader(stage: &'static str, bytes: &[u8]) -> Arc<Shader> {
 pub(crate) struct Translated {
     pub(crate) host: victory_shader::emit::HostShader,
     pub(crate) used: Vec<victory_shader::UsedResource>,
+    /// Whether the shader's code can store to buffer memory ([`stores`]);
+    /// true when its code is not known.
+    pub(crate) stores: bool,
 }
 
 #[cfg(windows)]
 impl Shader {
-    /// The console container bytes, for backend-neutral draw capture.
-    pub(crate) fn container_bytes(&self) -> &[u8] {
-        &self.container
-    }
-
     /// The translation, made on first use; a shader that does not
     /// translate is logged once.
     pub(crate) fn translated(&self) -> Option<&Translated> {
         self.translated
             .get_or_init(|| {
                 let done = translate(&self.container);
+                // `VICTORY_SHADER_SAVE=<dir>`: each shader as the title gave it (`.cdxil`) and as
+                // translated (`.dxil`), by the hash crash reports name it with
+                if let Some(dir) = std::env::var_os("VICTORY_SHADER_SAVE") {
+                    let dir = std::path::PathBuf::from(dir);
+                    let _ = std::fs::create_dir_all(&dir);
+                    let stem = format!("{}.{}", self.hash, self.stage);
+                    let _ = std::fs::write(dir.join(format!("{stem}.cdxil")), &self.container);
+                    if let Ok(t) = &done {
+                        let _ = std::fs::write(dir.join(format!("{stem}.dxil")), &t.host.dxil);
+                    }
+                }
+                if let Ok(t) = &done {
+                    KEPT[2].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    KEPT[3].fetch_add(t.host.dxil.len() as u64, std::sync::atomic::Ordering::Relaxed);
+                }
                 match &done {
                     Ok(t) => tracing::info!(
                         stage = self.stage,
@@ -137,23 +175,170 @@ impl Shader {
 #[cfg(windows)]
 fn translate(container: &[u8]) -> Result<Translated, String> {
     use victory_shader::{Container, FourCC, HwStage};
-    let host = crate::shader_cache::host_shader(container)?;
+    // The translation depends on it (a view index past a capped heap).
+    crate::descriptor::host::probe_view_limit();
     let c = Container::parse(container).map_err(|e| e.to_string())?;
-    let used = match c.part(FourCC::DXIL) {
-        Some(part) => victory_shader::native_programs(part.data)
-            .map_err(|e| e.to_string())?
-            .into_iter()
-            .find(|p| {
-                matches!(
-                    p.stage,
-                    HwStage::Vs | HwStage::Ps | HwStage::Ms | HwStage::Cs
-                )
-            })
-            .map(|p| p.used)
-            .unwrap_or_default(),
+    let programs = match c.part(FourCC::DXIL) {
+        Some(part) => victory_shader::native_programs(part.data).map_err(|e| e.to_string())?,
         None => Vec::new(),
     };
-    Ok(Translated { host, used })
+    let host = crate::shader_cache::host_shader(container)?;
+    let stores = programs.is_empty() || programs.iter().any(stores);
+    let used = programs
+        .into_iter()
+        .find(|p| {
+            matches!(
+                p.stage,
+                HwStage::Vs | HwStage::Ps | HwStage::Ms | HwStage::Cs
+            )
+        })
+        .map(|p| p.used)
+        .unwrap_or_default();
+    Ok(Translated { host, used, stores })
+}
+
+/// The compute pipelines of the console's ray-tracing structure builder
+/// (`XboxBvhBuilder.dll`; its programs are the ones with a spilled
+/// user-data table) run **all or none**. Its stages feed each other
+/// through memory: a stage that runs on what a dropped stage never wrote
+/// computes its store offsets from garbage. The structures lie in plain
+/// title memory, between the title's own objects, and a root view has no
+/// size, so those stores land on the neighbours (run 98, with 14 of 35
+/// stages translated: the title died within a second of the first builder
+/// submission, on pointers that had become bounding-box bit patterns).
+///
+/// So a builder dispatch runs only while every builder pipeline the title
+/// has created has a host pipeline; the first builder dispatch makes them
+/// all on the spot instead of over the next frames (a stage "still being
+/// made" would be a dropped stage). One that cannot be made turns the
+/// builder off for the rest of the run.
+///
+/// shortcut: and only with `VICTORY_BVH_BUILDER=1`, until a run has shown
+/// the whole builder and the host side of title memory by address
+/// (`memory.rs`) working on a card; nothing reads the structures before
+/// the programs that walk them translate.
+#[cfg(windows)]
+struct Builder {
+    pipelines: Vec<Arc<make::Pending>>,
+    /// Every one of `pipelines` has a host pipeline.
+    whole: bool,
+    /// One could not be made.
+    off: bool,
+}
+
+#[cfg(windows)]
+static BUILDER: Mutex<Builder> = Mutex::new(Builder {
+    pipelines: Vec::new(),
+    whole: false,
+    off: false,
+});
+
+/// Whether `shaders` are a pipeline of the structure builder.
+#[cfg(windows)]
+fn of_builder(shaders: &[Arc<Shader>]) -> bool {
+    use victory_shader::{Container, FourCC};
+    let [shader] = shaders else { return false };
+    if shader.stage != "compute" {
+        return false;
+    }
+    let Ok(c) = Container::parse(&shader.container) else {
+        return false;
+    };
+    c.part(FourCC::DXIL)
+        .and_then(|part| victory_shader::native_programs(part.data).ok())
+        .is_some_and(|programs| programs.iter().any(victory_shader::spill::is_spilled))
+}
+
+/// `VICTORY_BVH_QUARANTINE=1`: what the structure builder's stages store
+/// stays in the host's copies and is not copied back into title memory. A
+/// check for a first run of the whole builder: a stage that stores where
+/// it should not can then not reach the title's own objects (run 98), and
+/// the programs that walk the structures read the host's copies anyway.
+/// shortcut: not a way to run: the title also reads results back (sizes,
+/// counters) and gets none, and a copy's pages are overwritten from title
+/// memory when the title writes them.
+#[cfg(windows)]
+pub(crate) fn builder_quarantined(this: This) -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    is_builder(this) && *ON.get_or_init(|| std::env::var_os("VICTORY_BVH_QUARANTINE").is_some_and(|v| v == "1"))
+}
+
+/// Whether the title's pipeline `this` is one of the structure builder's.
+#[cfg(windows)]
+pub(crate) fn is_builder(this: This) -> bool {
+    !this.is_null() && pipeline(this).builder
+}
+
+/// A stage of the builder was dropped after all: none runs from here on.
+#[cfg(windows)]
+pub(crate) fn builder_off(why: &'static str) {
+    let mut b = BUILDER.lock().unwrap_or_else(|e| e.into_inner());
+    if !b.off {
+        b.off = true;
+        tracing::warn!(why, "the ray-tracing structure builder is turned off for the rest of the run: its stages run all or none");
+    }
+}
+
+/// At a dispatch of a builder pipeline: whether the builder runs (see
+/// [`Builder`]).
+#[cfg(windows)]
+pub(crate) fn builder_runs() -> bool {
+    static ALLOWED: OnceLock<bool> = OnceLock::new();
+    if !*ALLOWED.get_or_init(|| std::env::var_os("VICTORY_BVH_BUILDER").is_some_and(|v| v == "1")) {
+        return false;
+    }
+    let mut b = BUILDER.lock().unwrap_or_else(|e| e.into_inner());
+    if b.off {
+        return false;
+    }
+    if b.whole {
+        return true;
+    }
+    let missing = b.pipelines.iter().filter(|p| !make::now(p)).count();
+    if missing > 0 {
+        b.off = true;
+        tracing::warn!(
+            missing,
+            of = b.pipelines.len(),
+            "the ray-tracing structure builder stays off: not all of its programs have a host pipeline, and its stages run all or none"
+        );
+        return false;
+    }
+    tracing::info!(
+        pipelines = b.pipelines.len(),
+        "the ray-tracing structure builder runs: all of its programs have host pipelines"
+    );
+    b.whole = true;
+    true
+}
+
+/// Whether a console program can store to buffer memory: it has a buffer,
+/// typed-buffer, scalar-memory, flat or global store or atomic, or code
+/// that is not all known (an instruction of those kinds outside our table,
+/// an indirect jump, code that does not decode). Stores to textures
+/// (image instructions) and to the program's own scratch memory do not
+/// count: neither reaches a buffer's host copy. After upstream #413,
+/// which leaves scalar-memory stores out and counts image stores.
+#[cfg(windows)]
+fn stores(program: &victory_shader::NativeProgram) -> bool {
+    use victory_shader::gfx10::{Encoding, decode};
+    let Ok(code) = decode(&program.code) else {
+        return true;
+    };
+    code.iter().any(|i| {
+        let name = i.name();
+        match i.encoding {
+            Encoding::Mubuf
+            | Encoding::Mtbuf
+            | Encoding::Smem
+            | Encoding::Flat
+            | Encoding::Global => name.is_none_or(|n| {
+                (n.contains("store") || n.contains("atomic")) && !n.contains("scratch")
+            }),
+            Encoding::Sop1 => name.is_none_or(|n| matches!(n, "s_setpc_b64" | "s_swappc_b64")),
+            _ => false,
+        }
+    })
 }
 
 #[repr(C)]
@@ -164,87 +349,15 @@ struct Pipeline {
     shaders: Vec<Arc<Shader>>,
     /// Whether a list has bound it yet (its shaders are logged then).
     bound: std::sync::atomic::AtomicBool,
-    /// The rest of a stream's graphics state, for the host pipeline. Shared
-    /// (`Arc`) so the background compilation job can hold it too.
+    /// What its host pipeline is made from, and the host pipeline once made
+    /// (by a worker: the title may release the pipeline meanwhile).
     #[cfg(windows)]
-    graphics: Option<Arc<host::GraphicsState>>,
-    /// The host pipeline, compiled on the background pool from creation.
+    host: Arc<make::Pending>,
+    /// One of the ray-tracing structure builder's ([`Builder`]).
     #[cfg(windows)]
-    host: Arc<HostSlot>,
+    builder: bool,
 }
 const _: () = assert!(offset_of!(Pipeline, packet) == 0x10);
-
-/// The completion state of a background host compilation. The result lives
-/// in a `OnceLock` so a bind can hold a stable `&HostPipeline`; the condvar
-/// only signals completion (the lock is never held across the wait).
-#[cfg(windows)]
-pub(crate) struct HostSlot {
-    result: OnceLock<Option<host::HostPipeline>>,
-    done: std::sync::Condvar,
-    /// Held only to pair with `done`; the value is unused.
-    lock: std::sync::Mutex<()>,
-    /// Set when the pool could not take the job (queue full/closed): the
-    /// result is compiled inline at first use instead. Never blocks here.
-    abandoned: std::sync::atomic::AtomicBool,
-}
-
-#[cfg(windows)]
-impl HostSlot {
-    pub(crate) fn new() -> Self {
-        Self {
-            result: OnceLock::new(),
-            done: std::sync::Condvar::new(),
-            lock: std::sync::Mutex::new(()),
-            abandoned: std::sync::atomic::AtomicBool::new(false),
-        }
-    }
-
-    /// Store the compilation result (success or refusal) and wake waiters.
-    /// Called on EVERY pool exit path so a waiter is always released.
-    pub(crate) fn complete(&self, h: Option<host::HostPipeline>) {
-        let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = self.result.set(h);
-        self.done.notify_all();
-    }
-
-    /// Mark for inline compilation at first use (pool queue full/closed).
-    pub(crate) fn abandon(&self) {
-        self.abandoned
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// Whether the pool declined the job (compile inline at first use).
-    pub(crate) fn is_abandoned(&self) -> bool {
-        self.abandoned
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    /// Whether a result has been stored (success or refusal).
-    #[cfg(test)]
-    pub(crate) fn done(&self) -> bool {
-        self.result.get().is_some()
-    }
-
-    /// The result if compilation has finished, without waiting.
-    pub(crate) fn ready(&self) -> Option<Option<&host::HostPipeline>> {
-        self.result.get().map(|h| h.as_ref())
-    }
-
-    /// Wait up to `bound` for completion. `Some(result)` when done (the
-    /// inner `Option` is the refusal path), `None` on timeout (still
-    /// compiling — the caller counts a residual skip, work continues).
-    pub(crate) fn wait(&self, bound: std::time::Duration) -> Option<Option<&host::HostPipeline>> {
-        if let Some(h) = self.result.get() {
-            return Some(h.as_ref());
-        }
-        let g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-        let (_g, _timeout) = self
-            .done
-            .wait_timeout_while(g, bound, |_| self.result.get().is_none())
-            .unwrap_or_else(|e| e.into_inner());
-        self.result.get().map(|h| h.as_ref())
-    }
-}
 
 /// Stage names, in description order.
 const GRAPHICS_STAGES: [&str; 5] = ["vertex", "pixel", "domain", "hull", "geometry"];
@@ -281,138 +394,104 @@ pub fn mesh_start() -> Option<std::time::Instant> {
     MESH_START.get().copied()
 }
 
-/// A shared time bucket for synchronous first-use pipeline compilation.
-///
-/// The loading-screen frame renders on five `Subrender` worker threads; the
-/// title's hang watchdog ends the game after ~30 s without a frame. A frame
-/// meeting hundreds of new pipelines whose host compilation each takes
-/// 0.25-0.5 s slept all five workers past the watchdog (five-star
-/// FirstUseBudget.cs / debugging.md). The bucket caps the total first-use
-/// compilation time: capacity 1 s, refilling 0.25 s per second. When it is
-/// empty a first use skips compilation (returns `None`, the draw/dispatch is
-/// skipped) rather than blocking the worker; the pipeline compiles on a
-/// later bind once the bucket refills. Mechanism after five-star (GPL);
-/// implementation ours.
-#[cfg(windows)]
-mod first_use_budget {
-    use std::sync::Mutex;
-    use std::time::{Duration, Instant};
-
-    const CAPACITY: Duration = Duration::from_secs(1);
-    const REFILL_PER_SEC: f64 = 0.25;
-    /// A single bind never waits longer than this, so one slow compilation
-    /// cannot sleep a Subrender worker toward the hang watchdog.
-    const PER_WAIT_CAP: Duration = Duration::from_millis(250);
-    // (available time, last refill instant); lazily started on first use.
-    static BUCKET: Mutex<Option<(Duration, Instant)>> = Mutex::new(None);
-
-    fn refill(state: &mut (Duration, Instant)) {
-        let now = Instant::now();
-        let add = now.duration_since(state.1).as_secs_f64() * REFILL_PER_SEC;
-        state.0 = (state.0 + Duration::from_secs_f64(add)).min(CAPACITY);
-        state.1 = now;
-    }
-
-    /// The bound on THIS bind's inline wait: the available budget, capped
-    /// per wait. This bounds the wait only — compilation itself always runs
-    /// on the background pool regardless of the bucket (five-star semantics).
-    pub fn wait_bound() -> Duration {
-        let mut g = BUCKET.lock().unwrap_or_else(|e| e.into_inner());
-        let state = g.get_or_insert((CAPACITY, Instant::now()));
-        refill(state);
-        state.0.min(PER_WAIT_CAP)
-    }
-
-    /// Charge `elapsed` inline-wait time to the bucket.
-    pub fn spend(elapsed: Duration) {
-        let mut g = BUCKET.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(state) = g.as_mut() {
-            refill(state);
-            state.0 = state.0.saturating_sub(elapsed);
-        }
-    }
-}
-
-/// Residual first-use binds whose background compilation had not finished
-/// within the inline-wait bound. The work is dropped THIS bind only (no
-/// stand-in); compilation continues on the pool and the next bind finds it
-/// ready. Distinct from genuine refusals so it cannot mask them. With
-/// compilation kicked at creation this should be ~0.
-#[cfg(windows)]
-static BUDGET_SKIPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-/// Total residual inline-wait timeouts so far.
-#[cfg(windows)]
-pub(crate) fn budget_skips() -> u64 {
-    BUDGET_SKIPS.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-/// Binds that had to wait inline (queued result not ready, or inline
-/// fallback). Diagnostic for the first post-ban run.
-#[cfg(windows)]
-static INLINE_WAITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-/// Total microseconds spent in inline waits (queued waits + fallback compiles).
-#[cfg(windows)]
-static INLINE_WAIT_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-#[cfg(windows)]
-pub(crate) fn inline_waits() -> u64 {
-    INLINE_WAITS.load(std::sync::atomic::Ordering::Relaxed)
-}
-#[cfg(windows)]
-pub(crate) fn inline_wait_us() -> u64 {
-    INLINE_WAIT_US.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-/// The host pipeline of a title pipeline. Compilation is kicked on the
-/// background pool at creation (`hand_out`); here we wait only on the
-/// in-flight result, bounded by the time budget (five-star semantics — the
-/// budget bounds the inline WAIT, never licences skipping compilation).
-/// `None` if a shader does not translate or the host refuses it (the
-/// refusal path), or — counted as a residual skip — if the bound expires
-/// before the background result lands.
+/// The host pipeline of a title pipeline; `None` if one of its shaders does
+/// not translate, the host refuses it, or it is still being made (its first
+/// use starts that, see [`make`]).
 #[cfg(windows)]
 pub(crate) fn host_pipeline<'a>(this: This) -> Option<&'a host::HostPipeline> {
     if this.is_null() {
         return None;
     }
-    let p = pipeline(this);
-    // Already compiled (the common case by bind time): no wait, no cost.
-    if let Some(h) = p.host.ready() {
-        return h;
-    }
-    let start = std::time::Instant::now();
-    INLINE_WAITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    // The pool declined the job (queue full/closed): compile inline here at
-    // first use. This is the explicit, counted fallback — never a blocking
-    // enqueue on the title's CreatePipelineState thread.
-    if p.host.is_abandoned() {
-        let h = host::HostPipeline::new(&p.shaders, p.graphics.as_deref());
-        p.host.complete(h);
-        INLINE_WAIT_US.fetch_add(start.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
-        return p.host.ready().flatten();
-    }
-    // Queued: wait only on the in-flight result, bounded by the budget.
-    let bound = first_use_budget::wait_bound();
-    let result = p.host.wait(bound);
-    first_use_budget::spend(start.elapsed());
-    INLINE_WAIT_US.fetch_add(start.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
-    match result {
-        Some(h) => h, // done: success or genuine refusal
-        None => {
-            // Bound expired, compilation still in flight. Explicit + counted;
-            // the caller drops this bind's work (no stand-in) but the pool
-            // finishes it, so the next bind is ready — not a permanent skip.
-            let n = BUDGET_SKIPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-            if n % 100 == 1 {
+    make::ready(&pipeline(this).host)
+}
+
+/// Host pipelines queued and not made yet.
+#[cfg(windows)]
+pub(crate) fn making() -> u64 {
+    make::waiting()
+}
+
+/// Draws and dispatches dropped since the last [`take_drops`], by reason
+/// (diagnostics).
+#[cfg(all(windows, feature = "diagnostics"))]
+static DROPS: Mutex<Option<HashMap<String, u64>>> = Mutex::new(None);
+
+/// Shader hashes as printed in the pipeline diagnostics.
+#[cfg(all(windows, feature = "diagnostics"))]
+fn parse_skip_hashes(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|hash| !hash.is_empty())
+        .filter_map(|hash| {
+            if hash.len() == 16 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                Some(hash.to_ascii_lowercase())
+            } else {
                 tracing::warn!(
-                    skips = n,
-                    "inline wait expired: bind deferred, compilation continues"
+                    hash,
+                    "VICTORY_SKIP_PIPELINES expects 16-digit shader hashes"
                 );
+                None
             }
-            None
-        }
+        })
+        .collect()
+}
+
+#[cfg(all(windows, feature = "diagnostics"))]
+fn skipped_shader(p: &Pipeline) -> Option<&str> {
+    static HASHES: OnceLock<Vec<String>> = OnceLock::new();
+    let hashes = HASHES.get_or_init(|| {
+        let value = std::env::var("VICTORY_SKIP_PIPELINES").unwrap_or_default();
+        parse_skip_hashes(&value)
+    });
+    if hashes.is_empty() {
+        return None;
     }
+    p.shaders
+        .iter()
+        .find(|shader| hashes.contains(&shader.hash))
+        .map(|shader| shader.hash.as_str())
+}
+
+#[cfg(all(windows, feature = "diagnostics"))]
+pub(crate) fn is_skipped(this: This) -> bool {
+    !this.is_null() && skipped_shader(pipeline(this)).is_some()
+}
+
+/// Counts a draw or dispatch of `this` intentionally skipped or dropped
+/// for want of a host pipeline (diagnostics).
+#[cfg(all(windows, feature = "diagnostics"))]
+pub(crate) fn note_drop(this: This) {
+    let why = if this.is_null() {
+        Some("no pipeline set".to_owned())
+    } else {
+        let p = pipeline(this);
+        skipped_shader(p)
+            .map(|hash| format!("skipped shader {hash}"))
+            .or_else(|| make::missing(&p.host))
+    };
+    if let Some(why) = why {
+        note_why(why);
+    }
+}
+
+/// Counts a draw or dispatch dropped for `why` (diagnostics).
+#[cfg(all(windows, feature = "diagnostics"))]
+pub(crate) fn note_why(why: String) {
+    crate::capture::op(0, || format!("DROPPED {why}"));
+    let mut drops = DROPS.lock().unwrap_or_else(|e| e.into_inner());
+    *drops.get_or_insert_with(HashMap::new).entry(why).or_default() += 1;
+}
+
+/// The drops counted since the last call, most first (diagnostics).
+#[cfg(all(windows, feature = "diagnostics"))]
+pub(crate) fn take_drops() -> Vec<(String, u64)> {
+    let drops = DROPS.lock().unwrap_or_else(|e| e.into_inner()).take();
+    let mut drops: Vec<(String, u64)> = drops.into_iter().flatten().collect();
+    // Frame reports only show the first 40 reasons. Keep ties ordered so
+    // a HashMap iteration order change cannot change which reasons appear.
+    drops.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    drops
 }
 
 /// The stage's container, if it has one.
@@ -434,42 +513,27 @@ fn hand_out(
 ) -> HRESULT {
     tracing::trace!(?shaders, "pipeline state");
     #[cfg(windows)]
-    let graphics = graphics.map(Arc::from);
+    let host = Arc::new(make::Pending::new(shaders.clone(), graphics));
     #[cfg(windows)]
-    let slot = Arc::new(HostSlot::new());
+    make::early(&host);
     #[cfg(windows)]
-    {
-        // Kick host compilation on the bounded background pool NOW (creation
-        // time), so by bind time the result is usually ready and no Subrender
-        // worker sleeps on a synchronous Create*PipelineState. Inputs are
-        // Send (Arc<Shader>, Arc<GraphicsState>); errors take the refusal
-        // path inside HostPipeline::new, a panic is caught by the pool, and
-        // device loss surfaces as a refused result — never a crash.
-        if crate::mitigations::get().pool {
-            let job_shaders = shaders.clone();
-            let job_graphics = graphics.clone();
-            // The pool sets the slot on success, error AND panic; a full queue
-            // falls back to inline compilation at first use (never blocks here).
-            crate::hostpool::submit(
-                move || host::HostPipeline::new(&job_shaders, job_graphics.as_deref()),
-                Arc::clone(&slot),
-            );
-        } else {
-            // Attribution: pool OFF => the pre-pool synchronous path. Mark the
-            // slot abandoned so host_pipeline compiles inline at first use
-            // (no background thread, no budget wait). All-on is unchanged.
-            slot.abandon();
-        }
+    let builder = of_builder(&shaders);
+    #[cfg(windows)]
+    if builder {
+        // Another stage: the group is looked at again at its next dispatch.
+        let mut b = BUILDER.lock().unwrap_or_else(|e| e.into_inner());
+        b.pipelines.push(host.clone());
+        b.whole = false;
     }
     let pipeline = Box::new(Pipeline {
         object: Object::new(&FUNCTIONS),
         packet: [0; 8],
+        #[cfg(windows)]
+        host,
+        #[cfg(windows)]
+        builder,
         shaders,
         bound: std::sync::atomic::AtomicBool::new(false),
-        #[cfg(windows)]
-        graphics,
-        #[cfg(windows)]
-        host: slot,
     });
     object::hand_out(PIPELINE, pipeline, iid, &PIPELINE_IIDS, out)
 }
@@ -584,7 +648,7 @@ pub(crate) extern "system" fn create_stream(
     }
     let mut shaders = Vec::new();
     #[cfg(windows)]
-    let mut graphics = host::GraphicsStateBuilder::default();
+    let mut graphics = host::GraphicsState::default();
     let mut at = 0;
     while at + 8 <= desc.size {
         // SAFETY: inside the stream the title passes.
@@ -612,7 +676,7 @@ pub(crate) extern "system" fn create_stream(
     hand_out(
         shaders,
         #[cfg(windows)]
-        Some(Box::new(graphics.build())),
+        Some(Box::new(graphics)),
         iid,
         out,
     )
@@ -637,9 +701,50 @@ static FUNCTIONS: Table<24> = {
 
 #[cfg(windows)]
 pub(crate) mod host;
+#[cfg(windows)]
+mod library;
+#[cfg(windows)]
+mod make;
+
+/// Lets the pipeline library's mapped file go from memory when no pipeline
+/// has loaded for a while (`library::trim`); called by the host's sweep.
+#[cfg(windows)]
+pub(crate) fn trim_library() {
+    library::trim();
+}
+
+/// The pipeline library's part of the report when the host device is
+/// removed (`library::removal_note`).
+#[cfg(windows)]
+pub(crate) fn library_removal_note() -> String {
+    library::removal_note()
+}
+
+/// Keeps compiled host pipelines, and the list of title pipelines to start
+/// early, in `dir` (a folder of the cache) across runs.
+#[cfg(windows)]
+pub fn use_pipeline_cache(dir: std::path::PathBuf) {
+    library::use_pipeline_cache(dir);
+}
+
+/// Saves the pipeline cache now if anything was added (at the end of a run).
+#[cfg(windows)]
+pub fn save_pipeline_cache() {
+    library::save(true);
+}
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(windows, feature = "diagnostics"))]
+    #[test]
+    fn skip_hashes_accepts_full_hashes_only() {
+        assert!(super::parse_skip_hashes(" , ").is_empty());
+        assert_eq!(
+            super::parse_skip_hashes(" 0123456789ABCDEF, 0123456789abcde, xyz, 0011223344556677,"),
+            ["0123456789abcdef", "0011223344556677"]
+        );
+    }
+
     use super::*;
     use crate::object::{S_OK, slot};
 
@@ -693,7 +798,7 @@ mod tests {
         assert_eq!(slot::<extern "system" fn(This) -> u32>(p, 0x10)(p), 0);
     }
 
-    /// The stream layout Chores Simulator Miami builds (a title offset): root
+    /// The stream layout the title builds (a title offset): root
     /// signature, five shader slots (the first a mesh shader), blend, sample
     /// mask, rasterizer, depth-stencil 1, sample description, input layout,
     /// topology, render target and depth formats: 0x2b0 bytes.
@@ -738,7 +843,7 @@ mod tests {
         assert_eq!(shaders(p), [("mesh", ms.to_vec()), ("pixel", ps.to_vec())]);
         #[cfg(windows)]
         {
-            let g = pipeline(p).graphics.as_deref().unwrap();
+            let g = pipeline(p).host.graphics.as_deref().unwrap();
             assert_eq!(g.topology.0, 3);
             assert_eq!(
                 (g.targets.NumRenderTargets, g.targets.RTFormats[0].0),

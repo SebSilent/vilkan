@@ -12,6 +12,9 @@ license = "GPL-3.0-or-later"
 publish = false
 
 [workspace.dependencies]
+# SIMD-accelerated pure-Rust zlib/deflate (Zlib license); used by the scavenged
+# native-shader / dstorage / capture paths.
+zlib-rs = { version = "0.6.8", default-features = false, features = ["std"] }
 # Internal crates
 victory-core = { path = "crates/victory-core" }
 victory-pe = { path = "crates/victory-pe" }

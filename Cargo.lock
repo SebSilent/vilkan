@@ -1765,9 +1765,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "blake3",
- "miniz_oxide",
- "serde",
- "serde_json",
  "tempfile",
  "tracing",
  "victory-formats",
@@ -1775,6 +1772,7 @@ dependencies = [
  "victory-shader",
  "windows",
  "windows-sys 0.61.2",
+ "zlib-rs",
 ]
 
 [[package]]
@@ -1792,6 +1790,7 @@ dependencies = [
  "windows",
  "windows-core",
  "windows-sys 0.61.2",
+ "zlib-rs",
 ]
 
 [[package]]
@@ -1836,6 +1835,7 @@ dependencies = [
  "tracing",
  "windows",
  "windows-sys 0.61.2",
+ "zlib-rs",
 ]
 
 [[package]]
@@ -2429,6 +2429,12 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
+
+[[package]]
+name = "zlib-rs"
+version = "0.6.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa76918995d776d9dd34d371030be228d021137449771493d56e29f77e4148ac"
 
 [[package]]
 name = "zmij"
