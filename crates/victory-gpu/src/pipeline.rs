@@ -850,7 +850,63 @@ fn counted(kind: &'static str, record: &CacheRecord) {
             addressed = ?record_addresses(record, words),
             "a pipeline-cache record: its words, and what each pointer-shaped one addresses"
         );
+        tracing::warn!(
+            kind,
+            regions = ?slot_regions(record, words),
+            "the same record's regions in full: every pointer-shaped field, dumped to its own size"
+        );
     }
+}
+
+/// Every region a description points at, dumped as dwords to the size the
+/// description itself gives. A 48-byte head is what left the metadata region
+/// undecided: its first two dwords repeat the code region's size, which reads
+/// like a shared table, while the record's own fields (register counts, the
+/// resource layout, thread-group size) sit further in. `size` is the title's
+/// word for how long the region is, so the dump stops there and cannot bleed
+/// into the neighbour.
+fn slot_regions(record: &CacheRecord, words: usize) -> Vec<String> {
+    const CAP: usize = 0x200;
+    let base = record as *const CacheRecord as *const u64;
+    let mut out = Vec::new();
+    // Word 0 is the root signature's HANDLE, not a region: the regions start
+    // at word 1, each as a `{ptr, size}` pair.
+    for word in 1..words {
+        // SAFETY: `words` is the documented size of this kind's description.
+        let value = unsafe { core::ptr::read_volatile(base.add(word)) };
+        let next = unsafe {
+            core::ptr::read_volatile(base.add(word + 1).min(base.add(words - 1)))
+        };
+        let at = value as usize;
+        if at < ADDRESS_MIN || at > ADDRESS_MAX || at % 4 != 0 {
+            continue;
+        }
+        // The size is the NEXT word when it looks like a size: small, and not
+        // itself a pointer. Every region here is under 0x1000 bytes.
+        let size = usize::try_from(next).unwrap_or(usize::MAX);
+        let len = if size != 0 && size < 0x1_0000 { size.min(CAP) } else { CAP };
+        out.push(format!("+{:#x}[{}]", word * 8, dwords_at(at as *const u8, len)));
+        if out.len() >= 8 {
+            break;
+        }
+    }
+    out
+}
+
+/// `want` bytes at a guest address as little-endian dwords, cut to what is
+/// actually committed so a wrong parse cannot read a page that is not there.
+fn dwords_at(at: *const u8, want: usize) -> String {
+    let len = committed(at, want) & !3;
+    if len == 0 {
+        return String::new();
+    }
+    // SAFETY: `len` bytes at `at` are committed memory, and only they are read.
+    let bytes = unsafe { std::slice::from_raw_parts(at, len) };
+    bytes
+        .chunks_exact(4)
+        .map(|c| format!("{:08x}", u32::from_le_bytes(c.try_into().unwrap())))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Every pointer-shaped word of a description, by offset, with the bytes it
