@@ -612,6 +612,7 @@ pub(crate) const SRGB: [(u32, u32); 3] = [(29, 28), (91, 87), (93, 88)];
 /// The format a view of a title texture must name when its host copy is
 /// typeless (see [`DEPTH_FORMATS`], [`SRGB`]): the title's own; `None` if
 /// the host copy is typed.
+#[cfg(windows)]
 pub(crate) fn view_format(this: This) -> Option<u32> {
     // First: a view of no resource (a typed null view) has none.
     let host = host_resource(this)?;
@@ -620,6 +621,13 @@ pub(crate) fn view_format(this: This) -> Option<u32> {
     let format = unsafe { host.GetDesc() }.Format.0 as u32;
     // A stand-in target is typed.
     (format != own && format != target_format(own)).then_some(own)
+}
+
+/// There is no host resource table off Windows, so no view can disagree with
+/// its host copy.
+#[cfg(not(windows))]
+pub(crate) fn view_format(_: This) -> Option<u32> {
+    None
 }
 
 /// Depth formats with their typeless family: depth textures that shaders

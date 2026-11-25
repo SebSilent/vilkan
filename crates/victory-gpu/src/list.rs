@@ -1789,6 +1789,7 @@ impl ValueWait {
         met
     }
 
+    #[cfg(windows)]
     fn holds(&self) -> bool {
         let bytes = if self.wide { 8 } else { 4 };
         if self.address == 0 {
@@ -1806,6 +1807,16 @@ impl ValueWait {
             return true;
         }
         self.holds_for(u64::from_le_bytes(raw))
+    }
+
+    /// Off Windows there is no guest address space to read, so a wait built
+    /// here has no value to observe. Reporting it as no longer held is the
+    /// honest answer; blocking forever on a condition this target cannot see
+    /// would be worse.
+    #[cfg(not(windows))]
+    fn holds(&self) -> bool {
+        let _ = (self.wide, self.address);
+        false
     }
 
     /// Where the value waited for is: address and bytes.

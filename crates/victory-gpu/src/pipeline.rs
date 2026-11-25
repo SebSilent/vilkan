@@ -930,8 +930,16 @@ fn record_addresses(record: &CacheRecord, words: usize) -> Vec<String> {
 /// How many bytes of a guest address the host really has. A wrong parse
 /// points anywhere, and one read of a page that is not there takes the whole
 /// run down, so every window below is cut to what is committed first.
+#[cfg(windows)]
 fn committed(at: *const u8, want: usize) -> usize {
     (crate::texture::mapped_bytes(at, want) as usize).min(want)
+}
+
+/// Nothing is mapped off Windows: there is no guest address space to read, so
+/// every diagnostic window below collapses to zero bytes instead of faulting.
+#[cfg(not(windows))]
+fn committed(_at: *const u8, _want: usize) -> usize {
+    0
 }
 
 /// The forty-eight bytes an address starts with, as hex and then printable.

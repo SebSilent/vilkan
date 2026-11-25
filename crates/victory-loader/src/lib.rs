@@ -23,6 +23,11 @@
 
 #[cfg(windows)]
 mod console_insn;
+// The whole module is the crash reporter: minidumps, `CONTEXT` unwinding,
+// stack limits. Its re-exports below are already `#[cfg(windows)]`, and the
+// callers that want its text helpers (the guest-output note, `locate`) carry
+// their own non-Windows stub, so nothing else needs to see this on Linux.
+#[cfg(windows)]
 mod crash;
 pub mod prepare;
 pub mod resolve;
