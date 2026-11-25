@@ -606,13 +606,27 @@ struct CacheSlot {
     meta_size: usize,
 }
 
-/// The console's pipeline-cache record (device methods 0x1c8 and 0x218): a
-/// root signature, two metadata pairs, then seven shader slots. Graphics
-/// records use all seven (0x108 bytes); compute records only the first
-/// (0x48). The layout is five-star's `docs/d3d12x-pipelines.md`, confirmed
-/// against the words this tree logged from the title's own descriptions: a
-/// record read there as `{root, meta 28 bytes, meta 20 bytes, code 512
-/// bytes, shader metadata 344 bytes}` is exactly a compute record.
+/// The description the title hands device methods 0x1c8 and 0x218: a root
+/// signature, two metadata pairs, then seven shader slots. Graphics
+/// descriptions use all seven (0x108 bytes); compute ones only the first
+/// (0x48) — five-star's `docs/d3d12x-pipelines.md`.
+///
+/// These are NOT the cache file's records. The raw records in the blob are
+/// index-based and much smaller (0x70 graphics, 0x18 compute: hashes and
+/// `{i32 shader index, i32 metadata entry}` pairs resolved through the
+/// cache's metadata and shader index tables); the title's own loader
+/// (0x14248f680) resolves those indices into the pointer-based description
+/// this struct reads. So nothing here parses the blob: by the time a slot
+/// is called, the indices have become pointers and sizes.
+///
+/// What the first records looked like at runtime says the two kinds are not
+/// equally understood. A compute description reads as `{root, 28, 20, code
+/// 512 bytes at a guest address, shader metadata 344}` — the documented
+/// shape. A graphics description does not: its slot 0 and slot 1 carry the
+/// same code pointer, and their metadata pointers are the head's own two
+/// metadata fields, which is only possible if the region past 0x28 is not
+/// the seven-slot area this struct assumes. Graphics therefore never builds
+/// a pipeline from these fields today (see `program`).
 #[repr(C)]
 pub(crate) struct CacheRecord {
     root: This,
@@ -623,37 +637,125 @@ pub(crate) struct CacheRecord {
 
 const _: () = assert!(std::mem::size_of::<CacheRecord>() == 0x108);
 
-/// The stages a graphics record's seven slots hold, in order. The first two
-/// are certain (a graphics record without a vertex and pixel shader is
-/// nothing); the rest follow the order of `GRAPHICS_STAGES` with the two
-/// console mesh stages last, which the sizes logged at first use confirm or
-/// contradict.
-const CACHE_STAGES: [&str; 7] = [
-    "vertex",
-    "pixel",
-    "domain",
-    "hull",
-    "geometry",
-    "amplification",
-    "mesh",
+/// The stages a graphics description's seven slots hold, in order.
+///
+/// This is the cache's own order, not the desktop `GRAPHICS_STAGES` one:
+/// `docs/pipeline-cache.md` records slot 0 as the pixel shader, slot 1 the
+/// vertex shader, slot 2 the mesh/NGG program, slots 3 to 5 unused, and slot
+/// 6 a fetch shader, which has no metadata entry and no desktop stage. The
+/// reference dump agrees with what this tree sees at runtime: the records it
+/// fills carry pixel and vertex (13,383 of them) or pixel and mesh (10,726),
+/// and the first graphics descriptions here had exactly two slots filled.
+const CACHE_STAGES: [Option<&'static str>; 7] = [
+    Some("pixel"),
+    Some("vertex"),
+    Some("mesh"),
+    None,
+    None,
+    None,
+    None,
 ];
 
-/// A record's slots as `Bytecode`s, so that `copy` can read them.
-fn cache_stages(record: &CacheRecord, stages: &[&'static str]) -> Vec<Arc<Shader>> {
-    record
+/// One shader slot of a description, read for real.
+///
+/// The size in these records is the title's word for a region of its shader
+/// blob, and a wrong parse turns it into a wild read: `copy` would hand the
+/// compiler hundreds of kilobytes from an address that holds something else
+/// entirely. A slot is therefore accepted only when its three facts agree —
+/// a pointer inside the guest address space and aligned like the cache's
+/// code area, a size in the range a program actually occupies, and code
+/// that starts with the DXBC fourcc every console shader container starts
+/// with (`docs/d3d12x-pipelines.md`, "Shader bytecode"; the FSSM program
+/// rides inside its XDAT section, so a container is what we are handed).
+///
+/// Anything else is refused and left unbuilt, which drops that pipeline's
+/// work the way a stand-in already does. That is the deliberate trade: a
+/// dropped dispatch is visible and recoverable, a compile fed from a wrong
+/// offset is neither.
+/// Where the title maps the memory its descriptions point into: far above
+/// the null page, well below the kernel half.
+const ADDRESS_MIN: usize = 0x1_0000;
+const ADDRESS_MAX: usize = 0x0000_7fff_ffff_ffff;
+/// A program container: the smallest real ones are a few hundred bytes, the
+/// largest in the reference cache are the 5-10 MB screen-probe and
+/// ray-traced shadow compute shaders.
+const CODE_MIN: usize = 0x100;
+const CODE_MAX: usize = 16 << 20;
+
+/// The four bytes a slot's code starts with, zeroed when the address is not
+/// plausibly mapped at all — so the shape can be reported without reading
+/// wherever a wrong parse happens to point.
+fn head4(code: *const u8) -> [u8; 4] {
+    let at = code as usize;
+    if at < ADDRESS_MIN || at > ADDRESS_MAX {
+        return [0; 4];
+    }
+    // SAFETY: the address is inside the guest address space and four bytes
+    // of it are read.
+    unsafe { std::slice::from_raw_parts(code, 4) }
+        .try_into()
+        .unwrap_or([0; 4])
+}
+
+fn program(slot: &CacheSlot) -> Option<Bytecode> {
+    let at = slot.code as usize;
+    if at < ADDRESS_MIN
+        || at > ADDRESS_MAX
+        || at % 16 != 0
+        || slot.size < CODE_MIN
+        || slot.size > CODE_MAX
+    {
+        return None;
+    }
+    if head4(slot.code) != *b"DXBC" {
+        return None;
+    }
+    Some(Bytecode {
+        code: slot.code,
+        size: slot.size,
+    })
+}
+
+/// A record's slots as stages. A slot that does not read as a program is
+/// dropped; when a record yields nothing, what it really holds is logged a
+/// few times per kind, so the format is derived from the title's own data
+/// instead of assumed again.
+fn cache_stages(
+    kind: &'static str,
+    record: &CacheRecord,
+    stages: &[Option<&'static str>],
+) -> Vec<Arc<Shader>> {
+    let built = record
         .slots
         .iter()
         .zip(stages)
         .filter_map(|(s, name)| {
-            copy(
-                name,
-                &Bytecode {
-                    code: s.code,
-                    size: s.size,
-                },
-            )
+            let name = (*name)?;
+            program(s).and_then(|code| copy(name, &code))
         })
-        .collect()
+        .collect::<Vec<_>>();
+    if built.is_empty() {
+        unmatched(kind, record);
+    }
+    built
+}
+
+/// A description that built nothing: its raw words, so the real field
+/// layout can be read off them.
+fn unmatched(kind: &'static str, record: &CacheRecord) {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static CALLS: [AtomicU32; 2] = [const { AtomicU32::new(0) }; 2];
+    let at = usize::from(kind == "compute");
+    if CALLS[at].fetch_add(1, Ordering::Relaxed) < 4 {
+        tracing::warn!(
+            kind,
+            head = ?[record.state.code as usize, record.state.size, record.layout.code as usize, record.layout.size],
+            code = ?record.slots.map(|s| s.size),
+            metadata = ?record.slots.map(|s| s.meta_size),
+            fourcc = ?record.slots.map(|s| String::from_utf8_lossy(&head4(s.code)).into_owned()),
+            "a cache description built nothing"
+        );
+    }
 }
 
 /// Device method 0x1c8: a graphics pipeline of the title's own pipeline
@@ -663,10 +765,12 @@ fn cache_stages(record: &CacheRecord, stages: &[&'static str]) -> Vec<Arc<Shader
 /// descriptions is not ours yet, so the host pipeline is made from the
 /// stages alone, as device method 0x50 already does.
 ///
-/// A record that cannot be read still hands out a pipeline: the title reads
+/// A record that builds nothing still hands out a pipeline: the title reads
 /// the object back without a null check (five-star found a null here fault
-/// the story-mode load), so an unreadable one becomes a pipeline with no
-/// stages, which drops its draws the way a missing one does today.
+/// the story-mode load), so it becomes a pipeline with no stages, which
+/// drops its draws the way a missing one does today. Until the graphics
+/// description's slot area is matched by the DXBC check above, that is what
+/// every one of these calls does — and the reason is logged, not hidden.
 pub(crate) extern "system" fn create_graphics_cache(
     _: This,
     record: *const CacheRecord,
@@ -685,7 +789,7 @@ pub(crate) extern "system" fn create_graphics_cache(
     };
     counted("graphics", r);
     hand_out(
-        cache_stages(r, &CACHE_STAGES),
+        cache_stages("graphics", r, &CACHE_STAGES),
         #[cfg(windows)]
         None,
         iid,
@@ -713,7 +817,7 @@ pub(crate) extern "system" fn create_compute_cache(
     };
     counted("compute", r);
     hand_out(
-        cache_stages(r, &["compute"]),
+        cache_stages("compute", r, &[Some("compute")]),
         #[cfg(windows)]
         None,
         iid,
@@ -735,7 +839,10 @@ fn counted(kind: &'static str, record: &CacheRecord) {
             metadata = ?record.slots.map(|s| s.meta_size),
             state = record.state.size,
             layout = record.layout.size,
-            "a pipeline-cache record: the size of each slot, to check the stage order"
+            fourcc = ?record
+                .slots
+                .map(|s| String::from_utf8_lossy(&head4(s.code)).into_owned()),
+            "a pipeline-cache record: slot sizes and the fourcc at each code pointer"
         );
     }
 }
