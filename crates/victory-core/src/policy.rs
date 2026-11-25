@@ -1,6 +1,6 @@
 //! Rule #1, enforced at runtime: game-derived data never lands in the repo.
 //!
-//! Everything VIctory produces from the user's files (converted assets,
+//! Everything VIlkan produces from the user's files (converted assets,
 //! prepared images, shader caches, crash dumps) is as much "from the game"
 //! as the files themselves. Every tool that writes such output must call
 //! [`ensure_outside_repo`] on the destination first. The static half of the
@@ -20,7 +20,7 @@ fn compiled_workspace_root() -> PathBuf {
 #[derive(Debug, thiserror::Error)]
 pub enum PolicyError {
     #[error(
-        "refusing to use {path} for game-derived data: it is inside the VIctory source tree \
+        "refusing to use {path} for game-derived data: it is inside the VIlkan source tree \
          ({root}). Keep game files, caches and outputs outside the repository \
          (see docs/asset-policy.md)"
     )]
@@ -32,7 +32,7 @@ pub enum PolicyError {
     },
 }
 
-/// Returns `Ok` only if `path` is outside every VIctory source tree.
+/// Returns `Ok` only if `path` is outside every VIlkan source tree.
 ///
 /// `path` does not have to exist yet. Two checks are made:
 /// 1. it is not below the source tree this binary was built from;

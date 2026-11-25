@@ -119,7 +119,7 @@ impl Reader<'_> {
 }
 
 impl Tables {
-    /// The tables VIctory ships with.
+    /// The tables VIlkan ships with.
     pub fn builtin() -> Result<Tables, Error> {
         Tables::parse(include_bytes!("bcpack-tables.bin"))
     }

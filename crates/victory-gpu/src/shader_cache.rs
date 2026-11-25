@@ -1,5 +1,5 @@
 //! Translated shaders kept on disk (decision 0003): under the configured
-//! cache folder, keyed by the container's content and by the VIctory build
+//! cache folder, keyed by the container's content and by the VIlkan build
 //! that translated it (the BLAKE3 of our executable), so a rebuilt
 //! translator never serves an old translation. Entries go through
 //! `victory-pipeline`'s content-addressed cache, which writes them

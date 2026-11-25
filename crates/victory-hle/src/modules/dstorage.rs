@@ -908,7 +908,7 @@ fn bcpack_tables() -> Result<&'static Tables, HRESULT> {
     }
 }
 
-/// The tables VIctory ships with.
+/// The tables VIlkan ships with.
 #[cfg(not(test))]
 fn load_bcpack_tables() -> Result<Tables, String> {
     Tables::builtin().map_err(|e| format!("the built-in BCPack tables: {e}"))
