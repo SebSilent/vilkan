@@ -595,6 +595,151 @@ pub(crate) extern "system" fn create_compute_x(
     create_compute(this, desc, iid, out)
 }
 
+/// One shader slot of a pipeline-cache record: its code, then the metadata
+/// the cache carries with it.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct CacheSlot {
+    code: *const u8,
+    size: usize,
+    meta: *const u8,
+    meta_size: usize,
+}
+
+/// The console's pipeline-cache record (device methods 0x1c8 and 0x218): a
+/// root signature, two metadata pairs, then seven shader slots. Graphics
+/// records use all seven (0x108 bytes); compute records only the first
+/// (0x48). The layout is five-star's `docs/d3d12x-pipelines.md`, confirmed
+/// against the words this tree logged from the title's own descriptions: a
+/// record read there as `{root, meta 28 bytes, meta 20 bytes, code 512
+/// bytes, shader metadata 344 bytes}` is exactly a compute record.
+#[repr(C)]
+pub(crate) struct CacheRecord {
+    root: This,
+    state: Bytecode,
+    layout: Bytecode,
+    slots: [CacheSlot; 7],
+}
+
+const _: () = assert!(std::mem::size_of::<CacheRecord>() == 0x108);
+
+/// The stages a graphics record's seven slots hold, in order. The first two
+/// are certain (a graphics record without a vertex and pixel shader is
+/// nothing); the rest follow the order of `GRAPHICS_STAGES` with the two
+/// console mesh stages last, which the sizes logged at first use confirm or
+/// contradict.
+const CACHE_STAGES: [&str; 7] = [
+    "vertex",
+    "pixel",
+    "domain",
+    "hull",
+    "geometry",
+    "amplification",
+    "mesh",
+];
+
+/// A record's slots as `Bytecode`s, so that `copy` can read them.
+fn cache_stages(record: &CacheRecord, stages: &[&'static str]) -> Vec<Arc<Shader>> {
+    record
+        .slots
+        .iter()
+        .zip(stages)
+        .filter_map(|(s, name)| {
+            copy(
+                name,
+                &Bytecode {
+                    code: s.code,
+                    size: s.size,
+                },
+            )
+        })
+        .collect()
+}
+
+/// Device method 0x1c8: a graphics pipeline of the title's own pipeline
+/// cache `(record, iid, out)`. The record carries the shader code, which is
+/// what a pipeline is made of here; the fixed-function state it also
+/// carries is compact cache metadata whose mapping to the desktop
+/// descriptions is not ours yet, so the host pipeline is made from the
+/// stages alone, as device method 0x50 already does.
+///
+/// A record that cannot be read still hands out a pipeline: the title reads
+/// the object back without a null check (five-star found a null here fault
+/// the story-mode load), so an unreadable one becomes a pipeline with no
+/// stages, which drops its draws the way a missing one does today.
+pub(crate) extern "system" fn create_graphics_cache(
+    _: This,
+    record: *const CacheRecord,
+    iid: *const Iid,
+    out: *mut This,
+) -> HRESULT {
+    // SAFETY: the title passes a record of the documented size.
+    let Some(r) = (unsafe { record.as_ref() }) else {
+        return hand_out(
+            Vec::new(),
+            #[cfg(windows)]
+            None,
+            iid,
+            out,
+        );
+    };
+    counted("graphics", r);
+    hand_out(
+        cache_stages(r, &CACHE_STAGES),
+        #[cfg(windows)]
+        None,
+        iid,
+        out,
+    )
+}
+
+/// Device method 0x218: a compute pipeline of the title's pipeline cache,
+/// the same record with one shader slot.
+pub(crate) extern "system" fn create_compute_cache(
+    _: This,
+    record: *const CacheRecord,
+    iid: *const Iid,
+    out: *mut This,
+) -> HRESULT {
+    // SAFETY: the title passes a record of the documented size.
+    let Some(r) = (unsafe { record.as_ref() }) else {
+        return hand_out(
+            Vec::new(),
+            #[cfg(windows)]
+            None,
+            iid,
+            out,
+        );
+    };
+    counted("compute", r);
+    hand_out(
+        cache_stages(r, &["compute"]),
+        #[cfg(windows)]
+        None,
+        iid,
+        out,
+    )
+}
+
+/// The size of every slot of the first records, so that the order assumed
+/// above is measured: a graphics record whose two first slots are always
+/// filled and whose last two always are not says the mesh stages are last.
+fn counted(kind: &'static str, record: &CacheRecord) {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static CALLS: [AtomicU32; 2] = [const { AtomicU32::new(0) }; 2];
+    let at = usize::from(kind == "compute");
+    if CALLS[at].fetch_add(1, Ordering::Relaxed) < 6 {
+        tracing::warn!(
+            kind,
+            code = ?record.slots.map(|s| s.size),
+            metadata = ?record.slots.map(|s| s.meta_size),
+            state = record.state.size,
+            layout = record.layout.size,
+            "a pipeline-cache record: the size of each slot, to check the stage order"
+        );
+    }
+}
+
 /// A pipeline described as a stream: its size and the subobjects, each a
 /// type then its data, padded to 8 bytes.
 #[repr(C)]
