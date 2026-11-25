@@ -5918,10 +5918,7 @@ impl Meter {
             self.caption = Some(buffer);
         }
         let Some(caption) = &self.caption else { return };
-        // Our brand + the active backend, per the (DX12)/(Vulkan) title rule.
-        // This is the D3D12 host path (the bootstrap backend); the native
-        // Vulkan runtime (vilkan-vk) labels its own window (Vulkan).
-        let text = format!(" | VIlkan (DX12) {fps:.0} fps {ms:.1} ms/frame {draws:.0} draws/frame");
+        let text = format!(" | VIctory {fps:.0} fps {ms:.1} ms/frame {draws:.0} draws/frame");
         let mut text: Vec<u16> = caption.iter().copied().chain(text.encode_utf16()).collect();
         text.push(0);
         // Setting the text waits for the window's thread (a title thread,
@@ -5932,7 +5929,7 @@ impl Meter {
         *PENDING.lock().unwrap_or_else(|e| e.into_inner()) = Some((hwnd.0 as usize, text));
         SETTER.call_once(|| {
             let _ = std::thread::Builder::new()
-                .name("vilkan-caption".into())
+                .name("victory-caption".into())
                 .spawn(|| {
                     loop {
                         let next = PENDING.lock().unwrap_or_else(|e| e.into_inner()).take();
@@ -6398,7 +6395,7 @@ extern "system" fn window_proc(
 }
 
 fn make_window(width: u32, height: u32) -> windows::core::Result<HWND> {
-    const CLASS: PCWSTR = w!("VIlkan");
+    const CLASS: PCWSTR = w!("VIctory");
     // SAFETY: registers our class once and creates a window of it.
     unsafe {
         let instance = GetModuleHandleW(None)?;
@@ -6421,7 +6418,7 @@ fn make_window(width: u32, height: u32) -> windows::core::Result<HWND> {
         CreateWindowExW(
             WINDOW_EX_STYLE(0),
             CLASS,
-            w!("VIlkan"),
+            w!("VIctory"),
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
