@@ -11,9 +11,14 @@
 //!       [VILKAN_VK_FIXTURES=<dir with vs_ids.spv ps_flat.spv>]
 //!       [VILKAN_VK_COLOR=0.2,0.6,1.0]   clear colour, 0..1 floats
 //!       [VILKAN_VK_FRAMES=120]          exit after N presented frames
+//!       [VILKAN_VK_PPM=/tmp/vkframe.ppm] where to write the readback frame
 //!
 //! The clear path is the visible Vulkan milestone: it proves the instance,
 //! surface, swapchain and command submission of vilkan-vk really drive a GPU.
+//! The first clear frame also reads itself back *inside Vulkan* (image ->
+//! host-visible buffer copy in the same submission) and prints the numbers, so
+//! the proof does not depend on screen capture, which on this Wayland box is
+//! unreliable.
 
 use std::sync::Arc;
 use vilkan_vk::graphics::RenderTarget;
@@ -45,6 +50,19 @@ fn frames_limit() -> Option<u32> {
     std::env::var("VILKAN_VK_FRAMES").ok().and_then(|s| s.trim().parse().ok())
 }
 
+/// Where the readback PPM goes. A path the *Linux* side can see: the exe runs
+/// under wine but its own filesystem writes are real Unix writes, so this is a
+/// file we can then read with plain tools.
+fn ppm_path() -> Option<std::path::PathBuf> {
+    std::env::var_os("VILKAN_VK_PPM").map(std::path::PathBuf::from)
+        .or_else(|| Some(std::path::PathBuf::from("vkframe.ppm")))
+}
+
+/// Short form of a readback's distinct colours, for the log line.
+fn bgra_list(v: &[[u8; 4]]) -> String {
+    v.iter().take(6).map(|q| format!("[{},{},{},{}]", q[0], q[1], q[2], q[3])).collect::<Vec<_>>().join(" ")
+}
+
 struct App {
     window: Option<Arc<Window>>,
     swapchain: Option<Swapchain<'static>>,
@@ -55,6 +73,7 @@ struct App {
     color: [f32; 4],
     presented: u32,
     limit: Option<u32>,
+    ppm: Option<std::path::PathBuf>,
 }
 
 impl ApplicationHandler for App {
@@ -92,26 +111,53 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => _event_loop.exit(),
             WindowEvent::KeyboardInput { .. } => _event_loop.exit(),
             WindowEvent::RedrawRequested => {
-                let Some(sc) = &self.swapchain else { return };
-                let r = match &self.rt {
-                    Some(rt) => sc.present_blit(rt),
-                    None => sc.present_clear(self.color),
+                // First frame of the clear path reads itself back inside
+                // Vulkan; later frames take the plain path. Scoped so the
+                // immutable borrow of `self.swapchain` ends before we touch
+                // `self.presented`.
+                let outcome = {
+                    let Some(sc) = &self.swapchain else { return };
+                    let first = self.presented == 0;
+                    match (&self.rt, first) {
+                        (Some(rt), _) => sc.present_blit(rt).map(|_| None),
+                        (None, true) => sc.present_clear_readback(self.color, self.ppm.as_deref()).map(Some),
+                        (None, false) => sc.present_clear(self.color).map(|_| None),
+                    }
                 };
-                if let Err(e) = r {
-                    eprintln!("present failed: {e:#}");
-                    _event_loop.exit();
-                    return;
-                }
+                let rb = match outcome {
+                    Ok(rb) => rb,
+                    Err(e) => { eprintln!("present failed: {e:#}"); _event_loop.exit(); return; }
+                };
+                let (w, h) = match &self.swapchain { Some(sc) => (sc.extent.width, sc.extent.height), None => (0, 0) };
                 self.presented += 1;
                 if self.presented == 1 {
-                    eprintln!("first native frame presented ({}x{}, no D3D12)", sc.extent.width, sc.extent.height);
+                    eprintln!("first native frame presented ({w}x{h}, no D3D12)");
+                    if let Some(rb) = &rb {
+                        // The numbers, not a screenshot: what the GPU actually
+                        // wrote into the buffer we copied it to.
+                        eprintln!(
+                            "readback: {}x{} row_length={}B row_pitch={:?} format_raw={} packed={}B",
+                            rb.width, rb.height, rb.row_length, rb.row_pitch, rb.format.as_raw(), rb.packed.len()
+                        );
+                        let d = rb.distinct_bgra();
+                        eprintln!("readback distinct BGRA quads: {} -> {}", d.len(), bgra_list(&d));
+                        for (x, y) in [(0u32, 0u32), (w / 2, h / 2), (w - 1, h - 1)] {
+                            if let Some(q) = rb.sample_bgra(x, y) {
+                                eprintln!("readback pixel ({x},{y}) BGRA={:?} RGBA=({},{},{})",
+                                    q, q[2], q[1], q[0]);
+                            }
+                        }
+                        if let Some(p) = &self.ppm {
+                            eprintln!("readback PPM written to {}", p.display());
+                        }
+                    }
                 }
                 if self.limit.is_some_and(|n| self.presented >= n) {
                     eprintln!("{} frames presented; exiting", self.presented);
                     _event_loop.exit();
                     return;
                 }
-                if let Some(w) = &self.window { w.request_redraw(); }
+                if let Some(win) = &self.window { win.request_redraw(); }
             }
             _ => {}
         }
@@ -138,6 +184,7 @@ fn main() {
         color: color(),
         presented: 0,
         limit: frames_limit(),
+        ppm: ppm_path(),
     };
     event_loop.run_app(&mut app).expect("run");
 }
