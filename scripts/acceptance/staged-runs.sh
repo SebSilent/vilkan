@@ -258,7 +258,12 @@ echo "movement verdict: ${MOVEMENT:-FAIL}"
 echo "== FINAL CURRENT-TREE VERDICT (every blocking gate; parked excluded):"
 python3 "$HERE/gate_eval.py" \
     "$B/runR1-vilkan-out.log" "$B/runR2-vilkan-out.log" "${MOVEMENT:-FAIL}"
-echo "CURRENT-TREE exit: $?"
+GATE_RC=$?
+if [ "$GATE_RC" = 2 ]; then
+  echo "CURRENT-TREE: NO VERDICT — invalid run(s) (suspend-timeout / never reached world);"
+  echo "  NOT a mitigation measurement. Re-run clean (no foreign app) to the world."
+fi
+echo "CURRENT-TREE exit: $GATE_RC"
 
 # Clean up; verify 0 of OURS again (prefix-scoped; a foreign app is untouched).
 our_cleanup

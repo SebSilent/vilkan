@@ -8,7 +8,7 @@ suites run with CSM_ACCEPTANCE_CONFIG unset.
 
 usage: synth_log.py OUT KEY=VAL ...
 keys: refused sigdrops declined exec drawn dispatched budget q done fail fb
-      wall crash mesh maxframe hold pool(0/1)
+      wall crash mesh maxframe hold pool(0/1) suspend(0/1)
 """
 import sys
 from pathlib import Path
@@ -21,7 +21,8 @@ WFX = "2026-11-24T20:00:00.000000Z  WARN "
 D = dict(refused=S["refused_expect"], sigdrops=S["sigdrops_expect"],
          declined=S["declined_expect"], exec=S["indirect_min"], drawn=S["drawn_min"],
          dispatched=S["dispatch_min"], budget=0, q=10, done=10, fail=0, fb=0,
-         wall=S["synth_wall"], crash=0, mesh=1, maxframe=S["synth_maxframe"], hold=0, pool=1)
+         wall=S["synth_wall"], crash=0, mesh=1, maxframe=S["synth_maxframe"], hold=0, pool=1,
+         suspend=0)
 out = sys.argv[1]
 for kv in sys.argv[2:]:
     k, v = kv.split("=", 1)
@@ -54,5 +55,10 @@ if D["hold"]:
 for _ in range(D["crash"]):
     L.append("VIctory: unhandled exception 0xc0000005 at "
              f"synthetic-image.dll+0x{S['crash_marker']} (write 0x0)")
+if D["suspend"]:
+    # The loader's generic suspend-deadline message (our own emitter; not game
+    # data). Marks a run ended by an early window-close before the world.
+    L.append(f"{PFX}victory_hle::modules::lifecycle: window closed: suspending the title routines=2")
+    L.append(f"{PFX}victory_hle::modules::lifecycle: title did not finish suspending in time; ending the title")
 Path(out).write_text("\n".join(L) + "\n")
 print(f"wrote {out}")

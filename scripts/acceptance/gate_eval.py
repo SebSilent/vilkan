@@ -13,10 +13,17 @@ structural SYNTHETIC profile is used, so the rehearsal runs without game data.
 A gate that cannot fail is not a gate: every blocking gate has a concrete
 numeric predicate exercised by rehearsal.sh (one synthetic FAIL case each).
 
+Run-level validity precedes every gate: a run that ended via the loader
+suspend-timeout, or never reached world entry (maxframe <= floor), is INVALID,
+not FAIL. If either run is invalid, NO PASS/FAIL verdict is issued — the invalid
+runs are reported with their reason (`RUN-VALIDITY ...`) and the evaluator exits
+2 (NO VERDICT). A crash firing AT world entry stays a valid FAIL data point.
+
 usage: gate_eval.py R1_LOG R2_LOG MOVEMENT_VERDICT
   MOVEMENT_VERDICT = PASS | FAIL | NA  (from movement_gate.py)
-prints `GATE <id>: PASS|FAIL ...`, `PARKED ...`, `CURRENT-TREE: PASS|FAIL`.
-exit 0 iff CURRENT-TREE PASS.
+prints `RUN-VALIDITY ...`, `GATE <id>: PASS|FAIL ...`, `PARKED ...`,
+`CURRENT-TREE: PASS|FAIL` (or `CURRENT-TREE: NO VERDICT ...`).
+exit 0 iff CURRENT-TREE PASS; 1 iff FAIL; 2 iff NO VERDICT (invalid run).
 """
 import re
 import sys
@@ -66,7 +73,29 @@ def metrics(log):
         "crash": t.count(CRASH_MARKER),
         "mesh": len(re.findall(r'stage="mesh"', t)),
         "maxframe": maxint(t, r"frame=(\d+)"),
+        # The loader's suspend deadline fired ("title did not finish suspending
+        # in time"): the window was closed and the title terminated before it
+        # could run to the world. Known-good runs never carry this marker.
+        "suspend_timeout": t.count("did not finish suspending in time"),
     }
+
+
+def validity(r):
+    """A run is a valid mitigation measurement only if it ran to the world.
+
+    INVALID (no verdict may be issued from it) when:
+      * it ended via the loader suspend-timeout (window closed early), or
+      * it never reached world entry (maxframe at/below the measured floor).
+    Returns the list of reasons (empty == valid). A crash that fires AT world
+    entry is still a valid data point: the crash marker is judged by G7, not
+    here, so a genuine 1a crash is FAIL, never silently INVALID.
+    """
+    reasons = []
+    if r["suspend_timeout"] > 0:
+        reasons.append("ended via suspend-timeout (window closed before the world)")
+    if r["maxframe"] <= MAXFRAME_MIN:
+        reasons.append(f"never reached world entry (maxframe={r['maxframe']} <= floor={MAXFRAME_MIN})")
+    return reasons
 
 
 def main():
@@ -74,6 +103,23 @@ def main():
         print("usage: gate_eval.py R1_LOG R2_LOG MOVEMENT_VERDICT")
         return 2
     r1, r2, mov = metrics(sys.argv[1]), metrics(sys.argv[2]), sys.argv[3].upper()
+    # Run-level validity FIRST: a run that ended via suspend-timeout or never
+    # reached world entry is INVALID, not FAIL. No PASS/FAIL verdict may be
+    # issued from invalid runs; report them separately with the reason and exit
+    # 2 (NO VERDICT). This stops an early-ended run from masking a regression
+    # (0/2 crashes on a run that never exposed the crash window is not a fix).
+    v1, v2 = validity(r1), validity(r2)
+    for name, reasons in (("R1", v1), ("R2", v2)):
+        if reasons:
+            print(f"RUN-VALIDITY {name}: INVALID  ({'; '.join(reasons)})")
+        else:
+            print(f"RUN-VALIDITY {name}: valid")
+    invalid = [n for n, v in (("R1", v1), ("R2", v2)) if v]
+    if invalid:
+        print("CURRENT-TREE: NO VERDICT (invalid run(s): " + ", ".join(invalid)
+              + "; a suspend-timeout / pre-world-entry run is not a mitigation "
+              "measurement — re-run clean to the world)")
+        return 2
     # Presence counters (work/refusals/sig-drops must appear in EVERY run): MIN
     # across runs, so one run doing less work cannot hide behind a busier run.
     # Ceiling counters (budget skips, wall-time must not exceed in ANY run): MAX.

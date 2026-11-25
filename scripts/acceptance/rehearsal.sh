@@ -27,6 +27,19 @@ expect() {
   if [ "$ok" = 1 ]; then echo "ok   $name -> CURRENT-TREE $got${gate:+ ($gate FAIL)}";
   else echo "FAIL $name -> got $got want $want${gate:+ ($gate must FAIL)}"; echo "$out" | sed 's/^/      /'; fail=1; fi
 }
+# expect_noverdict NAME R1 R2 MOV — an INVALID run must yield NO VERDICT (exit 2),
+# never PASS or FAIL, with no per-gate verdict, and report the run INVALID.
+expect_noverdict() {
+  local name="$1" r1="$2" r2="$3" mov="$4" out rc ok=1
+  out=$(python3 gate_eval.py "$r1" "$r2" "$mov"); rc=$?
+  [ "$rc" = 2 ] || ok=0
+  echo "$out" | grep -q "CURRENT-TREE: NO VERDICT" || ok=0
+  echo "$out" | grep -qE "CURRENT-TREE: (PASS|FAIL)" && ok=0
+  echo "$out" | grep -qE "GATE .*: (PASS|FAIL)" && ok=0
+  echo "$out" | grep -q "RUN-VALIDITY .*: INVALID" || ok=0
+  if [ "$ok" = 1 ]; then echo "ok   $name -> NO VERDICT (exit 2; invalid reported; no PASS/FAIL)";
+  else echo "FAIL $name -> rc=$rc want 2/NO VERDICT"; echo "$out" | sed 's/^/      /'; fail=1; fi
+}
 
 # All-pass baseline (structural defaults: work intact, budget 0, pool clean,
 # wall under cap, no crash, mesh+maxframe, movement PASS).
@@ -51,11 +64,20 @@ gen "$T/g6.log" wall=$((WC+1000))
 expect "G6-wall-regression" "$T/base.log" "$T/g6.log" PASS FAIL "G6-wall-time"
 gen "$T/g7.log" crash=1
 expect "G7-1a-persists" "$T/base.log" "$T/g7.log" PASS FAIL "G7-1a-ratio"
-# G7 validity guard: 0 crashes but a run ended short of the world-entry floor ->
-# the ratio is INVALID (the crash window was never exposed), so G7 must FAIL.
+# Run-level VALIDITY: an invalid run yields NO VERDICT (exit 2), never PASS/FAIL.
 MF=$(python3 -c "import csm_config;print(csm_config.SYNTHETIC['maxframe_min'])")
+# (a) 0 crashes but a run ended short of world entry -> invalid ratio, NO VERDICT.
 gen "$T/g7short.log" maxframe=$((MF-500))
-expect "G7-1a-ratio-invalid-short-run" "$T/base.log" "$T/g7short.log" PASS FAIL "G7-1a-ratio"
+expect_noverdict "validity-short-run-no-verdict" "$T/base.log" "$T/g7short.log" PASS
+# (b) a run ended via suspend-timeout (even with a high maxframe) -> NO VERDICT.
+gen "$T/susp.log" suspend=1
+expect_noverdict "validity-suspend-timeout-no-verdict" "$T/base.log" "$T/susp.log" PASS
+# (c) BOTH runs invalid -> NO VERDICT.
+expect_noverdict "validity-both-invalid-no-verdict" "$T/g7short.log" "$T/susp.log" PASS
+# (d) validity precedes every gate: an invalid run + movement FAIL still NO VERDICT
+#     (cannot issue FAIL), and + movement PASS still NO VERDICT (cannot issue PASS).
+expect_noverdict "validity-precedes-movement-fail" "$T/base.log" "$T/susp.log" FAIL
+expect_noverdict "validity-precedes-movement-pass" "$T/susp.log" "$T/base.log" PASS
 gen "$T/g8.log" mesh=0
 expect "G8-no-mesh" "$T/base.log" "$T/g8.log" PASS FAIL "G8-mesh-progress"
 expect "G9-movement-fail" "$T/base.log" "$T/base2.log" FAIL FAIL "G9-movement"
