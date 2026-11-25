@@ -13,7 +13,11 @@ cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
 
 PROFILE="${PROFILE:-release}"
-FEATURES="${FEATURES:-}"
+# The diagnostics feature carries the scripted-input injector (VICTORY_KEYS),
+# the SC_CLOSE provenance and the event-relative input holds the acceptance
+# harness drives the title with. Without it the title sits at the press-start
+# menu forever (no input is injected). Default it ON; override with FEATURES=.
+FEATURES="${FEATURES:-diagnostics}"
 args=(xwin build --profile "$PROFILE" -p vilkan --target x86_64-pc-windows-msvc)
 if [[ -n "$FEATURES" ]]; then args+=(--features "$FEATURES"); fi
 cargo "${args[@]}"
