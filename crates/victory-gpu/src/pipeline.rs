@@ -833,18 +833,119 @@ fn counted(kind: &'static str, record: &CacheRecord) {
     static CALLS: [AtomicU32; 2] = [const { AtomicU32::new(0) }; 2];
     let at = usize::from(kind == "compute");
     if CALLS[at].fetch_add(1, Ordering::Relaxed) < 6 {
+        // The description's own words, before any interpretation: which
+        // fields are pointers, which are sizes, which are flags. Only as far
+        // as the kind's documented size — the guest lays these out 0x60
+        // apart, so reading past the end reports the next record's head and
+        // the layout gets "confirmed" by a neighbour.
+        let words = if kind == "compute" { 9 } else { 33 }; // 0x48, 0x108
+        let base = record as *const CacheRecord as *const u64;
+        let dump: Vec<String> = (0..words)
+            // SAFETY: `words` counts the documented size of this kind.
+            .map(|i| format!("{:#x}", unsafe { core::ptr::read_volatile(base.add(i)) }))
+            .collect();
         tracing::warn!(
             kind,
-            code = ?record.slots.map(|s| s.size),
-            metadata = ?record.slots.map(|s| s.meta_size),
-            state = record.state.size,
-            layout = record.layout.size,
-            fourcc = ?record
-                .slots
-                .map(|s| String::from_utf8_lossy(&head4(s.code)).into_owned()),
-            "a pipeline-cache record: slot sizes and the fourcc at each code pointer"
+            words = ?dump,
+            addressed = ?record_addresses(record, words),
+            "a pipeline-cache record: its words, and what each pointer-shaped one addresses"
         );
     }
+}
+
+/// Every pointer-shaped word of a description, by offset, with the bytes it
+/// addresses and the magics that sit NEAR them. The offsets are already
+/// known to be right (proof9's words matched this struct exactly); what is
+/// unknown is the FORMAT of the code bytes, and that is what these two
+/// strings settle: `head48` shows what is AT the pointer, `near48` shows
+/// whether a container header sits just BEFORE it.
+fn record_addresses(record: &CacheRecord, words: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let base = record as *const CacheRecord as *const u8;
+    for word in 0..words {
+        let at = word * 8;
+        // SAFETY: `words` is the documented size of this kind's description
+        // (0x48 compute, 0x108 graphics), so every word walked is inside it.
+        let value = unsafe { core::ptr::read_volatile(base.add(at) as *const u64) };
+        let addr = value as usize;
+        if addr < ADDRESS_MIN || addr > ADDRESS_MAX || addr % 4 != 0 {
+            continue;
+        }
+        let code = addr as *const u8;
+        out.push(format!("0x{at:x}=[{}] near[{}]", head48(code), near48(code)));
+        if out.len() >= 6 {
+            break;
+        }
+    }
+    out
+}
+
+/// How many bytes of a guest address the host really has. A wrong parse
+/// points anywhere, and one read of a page that is not there takes the whole
+/// run down, so every window below is cut to what is committed first.
+fn committed(at: *const u8, want: usize) -> usize {
+    (crate::texture::mapped_bytes(at, want) as usize).min(want)
+}
+
+/// The forty-eight bytes an address starts with, as hex and then printable.
+/// Hex, not just text, because a part's own index sits past its fixed
+/// header: a magic at +0x18 never shows in a sixteen-byte printable window.
+fn head48(code: *const u8) -> String {
+    let len = committed(code, 48);
+    if len == 0 {
+        return String::new();
+    }
+    // SAFETY: `len` bytes at `code` are committed memory, and only they are
+    // read.
+    let bytes = unsafe { std::slice::from_raw_parts(code, len) };
+    let hex: String = bytes.iter().map(|c| format!("{c:02x}")).collect();
+    let text: String = bytes
+        .iter()
+        .map(|c| if c.is_ascii_graphic() { *c as char } else { '.' })
+        .collect();
+    format!("{hex}|{text}")
+}
+
+/// The four-byte tags within 0x400 bytes BEFORE a code pointer and in the
+/// bytes after it, each as the offset from the pointer. This is the
+/// discriminator: a tag at a NEGATIVE offset means the description addresses
+/// a part inside a container, and the fix is to hand the compiler the bytes
+/// from the container's start; a tag AT or just past zero means a standalone
+/// blob, and the fix is to unpack it. Guessing wrong costs a wild read.
+fn near48(code: *const u8) -> String {
+    const LOOKBACK: usize = 0x400;
+    const AHEAD: usize = 0x40;
+    const TAGS: [&[u8]; 8] = [
+        b"DXBC", b"FSSM", b"XBCH", b"XDAT", b"SGD5", b"DXIL", b"ISG1", b"OSG1",
+    ];
+    let at = code as usize;
+    if at < ADDRESS_MIN + LOOKBACK {
+        return String::new();
+    }
+    let back = (at - LOOKBACK) as *const u8;
+    let len = committed(back, LOOKBACK + AHEAD);
+    if len < AHEAD {
+        return format!("unmapped({len})");
+    }
+    // SAFETY: `len` bytes from `back` are committed memory, and only they
+    // are read.
+    let window = unsafe { std::slice::from_raw_parts(back, len) };
+    let mut found = Vec::new();
+    for tag in TAGS {
+        // The container's own header is what matters most: report both its
+        // position relative to the pointer and its size field, which says
+        // where the container ends.
+        if let Some(p) = window.windows(4).position(|w| w == tag) {
+            let rel = p as isize - LOOKBACK as isize;
+            let mut end = String::new();
+            if tag == b"DXBC" && p + 12 <= len {
+                // DXBC: magic, four zero bytes, u32 whole-file size.
+                end = format!("/sz{}", u32::from_le_bytes(window[p + 8..p + 12].try_into().unwrap()));
+            }
+            found.push(format!("{}@{rel}{end}", String::from_utf8_lossy(tag)));
+        }
+    }
+    found.join(",")
 }
 
 /// A pipeline described as a stream: its size and the subobjects, each a
