@@ -9,11 +9,11 @@
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard};
-use std::time::Duration;
+use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetCurrentThreadId, TerminateProcess};
 use windows_sys::Win32::UI::WindowsAndMessaging::{self as wm, HMENU};
 use windows_sys::core::{PCSTR, PCWSTR, w};
 
@@ -32,6 +32,26 @@ fn routines() -> MutexGuard<'static, Vec<(usize, Routine, usize)>> {
 const SUSPEND_DEADLINE: Duration = Duration::from_secs(1);
 
 const ERROR_INVALID_PARAMETER: u32 = 87;
+
+/// Process start, for SC_CLOSE elapsed-time provenance.
+static START: OnceLock<Instant> = OnceLock::new();
+/// Every SC_CLOSE seen, counted so ignoring one never silently hides a
+/// title-initiated exit (the count and per-event provenance stay in the log).
+static SC_CLOSE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Opt-in: does an external window close (SC_CLOSE) end the title? Default OFF,
+/// so a headless run cannot be ended by an outside close — the harness `timeout`
+/// stays authoritative. Set `VICTORY_CLOSE_ENDS=1` to restore close-ends-title
+/// (interactive use). Read once.
+fn close_ends() -> bool {
+    static ENDS: OnceLock<bool> = OnceLock::new();
+    *ENDS.get_or_init(|| {
+        matches!(
+            std::env::var("VICTORY_CLOSE_ENDS").as_deref(),
+            Ok("1") | Ok("true") | Ok("on") | Ok("yes")
+        )
+    })
+}
 
 pub extern "system" fn RegisterAppStateChangeNotification(
     routine: Option<Routine>,
@@ -209,10 +229,47 @@ extern "system" fn window_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    // Mark boot on the first message the window receives (creation is early),
+    // so SC_CLOSE elapsed-time provenance is measured from window creation.
+    START.get_or_init(Instant::now);
     // A user close (close button, Alt+F4, window or taskbar menu); a
     // console title never sees one, nor a WM_CLOSE from it.
     if message == wm::WM_SYSCOMMAND && wparam & 0xFFF0 == wm::SC_CLOSE as usize {
-        end_title("window closed", Box::new(|| {}));
+        let start = *START.get_or_init(Instant::now);
+        let n = SC_CLOSE_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        // SAFETY: returns the calling thread's id; no memory touched.
+        let thread = unsafe { GetCurrentThreadId() };
+        let elapsed = start.elapsed().as_millis();
+        let fatal = victory_loader::last_fatal();
+        let crashes = victory_loader::crash_count();
+        if close_ends() {
+            tracing::warn!(
+                wparam = format_args!("{wparam:#x}"),
+                lparam = format_args!("{lparam:#x}"),
+                thread,
+                elapsed_ms = elapsed,
+                count = n,
+                preceding_crashes = crashes,
+                preceding_fatal = fatal.as_deref().unwrap_or("none"),
+                "SC_CLOSE received: VICTORY_CLOSE_ENDS on, ending the title"
+            );
+            end_title("window closed", Box::new(|| {}));
+            return 0;
+        }
+        // Default: an external close must NOT end a headless run. Log full
+        // provenance (and any preceding fatal, so a title-initiated exit that
+        // faulted just before the close is never hidden), count it, and swallow
+        // it — the harness `timeout` remains the only authority that ends a run.
+        tracing::warn!(
+            wparam = format_args!("{wparam:#x}"),
+            lparam = format_args!("{lparam:#x}"),
+            thread,
+            elapsed_ms = elapsed,
+            count = n,
+            preceding_crashes = crashes,
+            preceding_fatal = fatal.as_deref().unwrap_or("none"),
+            "SC_CLOSE ignored (VICTORY_CLOSE_ENDS off); run continues, timeout authoritative"
+        );
         return 0;
     }
     // SAFETY: the procedure `hook` stored, called the way the system would.

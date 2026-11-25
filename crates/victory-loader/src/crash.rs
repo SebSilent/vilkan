@@ -108,6 +108,22 @@ fn title_output() -> String {
     said.iter().map(|l| format!("  title said: {l}\n")).collect()
 }
 
+/// The headline of the most recent fatal exception, and how many were reported
+/// this process. Read by the window-close provenance log so an ignored SC_CLOSE
+/// never silently hides a title-initiated exit that faulted just before it.
+static LAST_FATAL: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static CRASH_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The headline of the most recent fatal exception, if any (close provenance).
+pub fn last_fatal() -> Option<String> {
+    LAST_FATAL.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// How many fatal exceptions have been reported this process.
+pub fn crash_count() -> usize {
+    CRASH_COUNT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Installs the handlers; call once before running title code.
 pub fn report_crashes() {
     unsafe extern "system" fn filter(info: *const EXCEPTION_POINTERS) -> i32 {
@@ -301,11 +317,10 @@ unsafe fn report(what: &str, info: *const EXCEPTION_POINTERS, to_file: bool) {
         text.push_str(&l);
         text.push('\n');
     };
-    line(format!(
-        "VIctory: {what} {:#010x} at {}{detail}",
-        code as u32,
-        locate(at)
-    ));
+    let headline = format!("{what} {:#010x} at {}{detail}", code as u32, locate(at));
+    CRASH_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    *LAST_FATAL.lock().unwrap_or_else(|e| e.into_inner()) = Some(headline.clone());
+    line(format!("VIctory: {headline}"));
     line(format!(
         "  rax {:#x} rbx {:#x} rcx {:#x} rdx {:#x} rsi {:#x} rdi {:#x} rsp {:#x} rbp {:#x}",
         context.Rax,

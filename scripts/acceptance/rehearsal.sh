@@ -78,6 +78,14 @@ expect_noverdict "validity-both-invalid-no-verdict" "$T/g7short.log" "$T/susp.lo
 #     (cannot issue FAIL), and + movement PASS still NO VERDICT (cannot issue PASS).
 expect_noverdict "validity-precedes-movement-fail" "$T/base.log" "$T/susp.log" FAIL
 expect_noverdict "validity-precedes-movement-pass" "$T/susp.log" "$T/base.log" PASS
+# (e) a GRACEFUL window-close end (no suspend-timeout marker, high maxframe) is
+#     still close-ended -> INVALID -> NO VERDICT (close-ended != mitigation run).
+gen "$T/close.log" close=1
+expect_noverdict "validity-close-ended-no-verdict" "$T/base.log" "$T/close.log" PASS
+# (f) an IGNORED SC_CLOSE (VICTORY_CLOSE_ENDS off) does NOT invalidate: the run
+#     continued to the world, so a clean pair with ignored closes still PASSes.
+gen "$T/scignore.log" scignore=2
+expect "validity-ignored-close-still-valid" "$T/base.log" "$T/scignore.log" PASS PASS
 gen "$T/g8.log" mesh=0
 expect "G8-no-mesh" "$T/base.log" "$T/g8.log" PASS FAIL "G8-mesh-progress"
 expect "G9-movement-fail" "$T/base.log" "$T/base2.log" FAIL FAIL "G9-movement"

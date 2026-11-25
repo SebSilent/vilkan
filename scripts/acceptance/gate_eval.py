@@ -13,11 +13,13 @@ structural SYNTHETIC profile is used, so the rehearsal runs without game data.
 A gate that cannot fail is not a gate: every blocking gate has a concrete
 numeric predicate exercised by rehearsal.sh (one synthetic FAIL case each).
 
-Run-level validity precedes every gate: a run that ended via the loader
-suspend-timeout, or never reached world entry (maxframe <= floor), is INVALID,
-not FAIL. If either run is invalid, NO PASS/FAIL verdict is issued — the invalid
-runs are reported with their reason (`RUN-VALIDITY ...`) and the evaluator exits
-2 (NO VERDICT). A crash firing AT world entry stays a valid FAIL data point.
+Run-level validity precedes every gate: a run that ended via a window close
+(end_title "window closed"), the loader suspend-timeout, or never reached world
+entry (maxframe <= floor), is INVALID, not FAIL. If either run is invalid, NO
+PASS/FAIL verdict is issued — the invalid runs are reported with their reason
+(`RUN-VALIDITY ...`) and the evaluator exits 2 (NO VERDICT). An ignored SC_CLOSE
+(VICTORY_CLOSE_ENDS off) does NOT invalidate (the run continued); it is reported
+as a diagnostic. A crash firing AT world entry stays a valid FAIL data point.
 
 usage: gate_eval.py R1_LOG R2_LOG MOVEMENT_VERDICT
   MOVEMENT_VERDICT = PASS | FAIL | NA  (from movement_gate.py)
@@ -77,6 +79,13 @@ def metrics(log):
         # in time"): the window was closed and the title terminated before it
         # could run to the world. Known-good runs never carry this marker.
         "suspend_timeout": t.count("did not finish suspending in time"),
+        # end_title("window closed", ...) fired: the run was ended by a window
+        # close (SC_CLOSE with VICTORY_CLOSE_ENDS on), gracefully or not. A
+        # close-ended run is not a mitigation measurement either.
+        "close_ended": t.count("window closed: suspending the title"),
+        # SC_CLOSE seen but ignored (VICTORY_CLOSE_ENDS off): the run continued,
+        # so this does NOT invalidate; reported as a diagnostic only.
+        "sc_close_ignored": t.count("SC_CLOSE ignored"),
     }
 
 
@@ -84,13 +93,17 @@ def validity(r):
     """A run is a valid mitigation measurement only if it ran to the world.
 
     INVALID (no verdict may be issued from it) when:
+      * it ended via a window close (end_title "window closed"), or
       * it ended via the loader suspend-timeout (window closed early), or
       * it never reached world entry (maxframe at/below the measured floor).
-    Returns the list of reasons (empty == valid). A crash that fires AT world
-    entry is still a valid data point: the crash marker is judged by G7, not
-    here, so a genuine 1a crash is FAIL, never silently INVALID.
+    An ignored SC_CLOSE (VICTORY_CLOSE_ENDS off) does NOT invalidate: the run
+    continued. Returns the list of reasons (empty == valid). A crash that fires
+    AT world entry is still a valid data point: the crash marker is judged by G7,
+    not here, so a genuine 1a crash is FAIL, never silently INVALID.
     """
     reasons = []
+    if r["close_ended"] > 0:
+        reasons.append("ended via window close (end_title 'window closed'; not a mitigation run)")
     if r["suspend_timeout"] > 0:
         reasons.append("ended via suspend-timeout (window closed before the world)")
     if r["maxframe"] <= MAXFRAME_MIN:
@@ -103,22 +116,28 @@ def main():
         print("usage: gate_eval.py R1_LOG R2_LOG MOVEMENT_VERDICT")
         return 2
     r1, r2, mov = metrics(sys.argv[1]), metrics(sys.argv[2]), sys.argv[3].upper()
-    # Run-level validity FIRST: a run that ended via suspend-timeout or never
-    # reached world entry is INVALID, not FAIL. No PASS/FAIL verdict may be
-    # issued from invalid runs; report them separately with the reason and exit
-    # 2 (NO VERDICT). This stops an early-ended run from masking a regression
-    # (0/2 crashes on a run that never exposed the crash window is not a fix).
+    # Run-level validity FIRST: a run that ended via a window close / suspend-
+    # timeout or never reached world entry is INVALID, not FAIL. No PASS/FAIL
+    # verdict may be issued from invalid runs; report them separately with the
+    # reason and exit 2 (NO VERDICT). This stops an early-ended run from masking
+    # a regression (0/2 crashes on a run that never exposed the crash window is
+    # not a fix).
     v1, v2 = validity(r1), validity(r2)
-    for name, reasons in (("R1", v1), ("R2", v2)):
+    for name, r, reasons in (("R1", r1, v1), ("R2", r2, v2)):
         if reasons:
             print(f"RUN-VALIDITY {name}: INVALID  ({'; '.join(reasons)})")
         else:
             print(f"RUN-VALIDITY {name}: valid")
+        # Ignored SC_CLOSE (VICTORY_CLOSE_ENDS off) is a diagnostic, not a
+        # validity failure: the run continued past the external close.
+        if r["sc_close_ignored"] > 0:
+            print(f"  note {name}: {r['sc_close_ignored']} external SC_CLOSE ignored "
+                  "(VICTORY_CLOSE_ENDS off); run continued")
     invalid = [n for n, v in (("R1", v1), ("R2", v2)) if v]
     if invalid:
         print("CURRENT-TREE: NO VERDICT (invalid run(s): " + ", ".join(invalid)
-              + "; a suspend-timeout / pre-world-entry run is not a mitigation "
-              "measurement — re-run clean to the world)")
+              + "; a close-ended / suspend-timeout / pre-world-entry run is not a "
+              "mitigation measurement — re-run clean to the world)")
         return 2
     # Presence counters (work/refusals/sig-drops must appear in EVERY run): MIN
     # across runs, so one run doing less work cannot hide behind a busier run.

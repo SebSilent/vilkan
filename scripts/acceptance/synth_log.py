@@ -8,7 +8,7 @@ suites run with CSM_ACCEPTANCE_CONFIG unset.
 
 usage: synth_log.py OUT KEY=VAL ...
 keys: refused sigdrops declined exec drawn dispatched budget q done fail fb
-      wall crash mesh maxframe hold pool(0/1) suspend(0/1)
+      wall crash mesh maxframe hold pool(0/1) suspend(0/1) close(0/1) scignore(N)
 """
 import sys
 from pathlib import Path
@@ -22,7 +22,7 @@ D = dict(refused=S["refused_expect"], sigdrops=S["sigdrops_expect"],
          declined=S["declined_expect"], exec=S["indirect_min"], drawn=S["drawn_min"],
          dispatched=S["dispatch_min"], budget=0, q=10, done=10, fail=0, fb=0,
          wall=S["synth_wall"], crash=0, mesh=1, maxframe=S["synth_maxframe"], hold=0, pool=1,
-         suspend=0)
+         suspend=0, close=0, scignore=0)
 out = sys.argv[1]
 for kv in sys.argv[2:]:
     k, v = kv.split("=", 1)
@@ -60,5 +60,15 @@ if D["suspend"]:
     # data). Marks a run ended by an early window-close before the world.
     L.append(f"{PFX}victory_hle::modules::lifecycle: window closed: suspending the title routines=2")
     L.append(f"{PFX}victory_hle::modules::lifecycle: title did not finish suspending in time; ending the title")
+if D["close"]:
+    # A graceful window-close end (end_title "window closed", suspended in time):
+    # close-ended WITHOUT the suspend-timeout marker. Our own emitter; not data.
+    L.append(f"{PFX}victory_hle::modules::lifecycle: window closed: suspending the title routines=2")
+    L.append(f"{PFX}victory_hle::modules::lifecycle: title suspended; ending the title")
+for _ in range(D["scignore"]):
+    # SC_CLOSE seen but ignored (VICTORY_CLOSE_ENDS off): run continued. Diagnostic.
+    L.append(f"{WFX}victory_hle::modules::lifecycle: wparam=0xf060 lparam=0x0 thread=1 "
+             f"elapsed_ms=5000 count=1 preceding_crashes=0 preceding_fatal=none "
+             f"SC_CLOSE ignored (VICTORY_CLOSE_ENDS off); run continues, timeout authoritative")
 Path(out).write_text("\n".join(L) + "\n")
 print(f"wrote {out}")
