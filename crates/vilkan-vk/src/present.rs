@@ -50,7 +50,10 @@ impl<'a> Swapchain<'a> {
             .image_color_space(sf.color_space)
             .image_extent(extent)
             .image_array_layers(1)
-            .image_usage(vk::ImageUsageFlags::TRANSFER_DST)
+            // TRANSFER_DST for the blit path, COLOR_ATTACHMENT so a bare
+            // vkCmdClearColorImage is legal (the fixture-free milestone path
+            // presents a solid colour with no pipeline at all).
+            .image_usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::COLOR_ATTACHMENT)
             .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
             .pre_transform(caps.current_transform)
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
@@ -144,6 +147,72 @@ impl<'a> Swapchain<'a> {
         // SAFETY: valid queue/present info.
         unsafe { self.loader.queue_present(self.ctx.queue, &pi) }?;
         // Wait for the blit submit to finish, then free its command pool.
+        // SAFETY: valid fence/pool.
+        unsafe { dev.wait_for_fences(&[self.fence], true, u64::MAX) }?;
+        // SAFETY: valid pool (submit complete).
+        unsafe { dev.destroy_command_pool(pool, None) };
+        Ok(())
+    }
+
+    /// Present a solid colour: acquire, one command buffer that clears the
+    /// swapchain image, submit, present. No SPIR-V, no pipeline, no render
+    /// pass - the smallest thing that can put real pixels on a real screen.
+    pub fn present_clear(&self, rgba: [f32; 4]) -> Result<()> {
+        let dev = &self.ctx.device;
+        // SAFETY: valid fence.
+        unsafe { dev.wait_for_fences(&[self.fence], true, u64::MAX) }?;
+        // SAFETY: valid fence.
+        unsafe { dev.reset_fences(&[self.fence]) }?;
+        // SAFETY: valid swapchain/semaphore.
+        let (idx, _) = unsafe { self.loader.acquire_next_image(self.handle, u64::MAX, self.acquire, vk::Fence::null()) }?;
+        let dst = self.images[idx as usize];
+        let pool_info = vk::CommandPoolCreateInfo::default()
+            .queue_family_index(self.ctx.queue_family)
+            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
+        // SAFETY: valid device/queue family.
+        let pool = unsafe { dev.create_command_pool(&pool_info, None) }?;
+        let ai = vk::CommandBufferAllocateInfo::default().command_pool(pool)
+            .level(vk::CommandBufferLevel::PRIMARY).command_buffer_count(1);
+        // SAFETY: valid pool.
+        let cmd = unsafe { dev.allocate_command_buffers(&ai) }?[0];
+        let bi = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        // SAFETY: valid command buffer.
+        unsafe { dev.begin_command_buffer(cmd, &bi) }?;
+        let range = vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 };
+        let to_color = vk::ImageMemoryBarrier::default()
+            .old_layout(vk::ImageLayout::UNDEFINED).new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .image(dst).subresource_range(range)
+            .src_access_mask(vk::AccessFlags::empty()).dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE);
+        // SAFETY: valid command buffer/barrier.
+        unsafe { dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::DependencyFlags::empty(), &[], &[], std::slice::from_ref(&to_color)) };
+        let value = vk::ClearColorValue { float32: rgba };
+        // SAFETY: valid command buffer/image; image has COLOR_ATTACHMENT usage.
+        unsafe { dev.cmd_clear_color_image(cmd, dst, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL, &value, std::slice::from_ref(&range)) };
+        let to_present = vk::ImageMemoryBarrier::default()
+            .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL).new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+            .image(dst).subresource_range(range)
+            .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE).dst_access_mask(vk::AccessFlags::empty());
+        // SAFETY: valid command buffer/barrier.
+        unsafe { dev.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::PipelineStageFlags::BOTTOM_OF_PIPE, vk::DependencyFlags::empty(), &[], &[], std::slice::from_ref(&to_present)) };
+        // SAFETY: valid command buffer.
+        unsafe { dev.end_command_buffer(cmd) }?;
+        let wait_stage = vk::PipelineStageFlags::TRANSFER;
+        let cmds = [cmd];
+        let si = vk::SubmitInfo::default()
+            .wait_semaphores(std::slice::from_ref(&self.acquire))
+            .wait_dst_stage_mask(std::slice::from_ref(&wait_stage))
+            .command_buffers(&cmds)
+            .signal_semaphores(std::slice::from_ref(&self.present_done));
+        // SAFETY: valid queue/semaphores/fence/command buffer.
+        unsafe { dev.queue_submit(self.ctx.queue, std::slice::from_ref(&si), self.fence) }?;
+        let swapchains = [self.handle];
+        let indices = [idx];
+        let pi = vk::PresentInfoKHR::default()
+            .wait_semaphores(std::slice::from_ref(&self.present_done))
+            .swapchains(&swapchains)
+            .image_indices(&indices);
+        // SAFETY: valid queue/present info.
+        unsafe { self.loader.queue_present(self.ctx.queue, &pi) }?;
         // SAFETY: valid fence/pool.
         unsafe { dev.wait_for_fences(&[self.fence], true, u64::MAX) }?;
         // SAFETY: valid pool (submit complete).
