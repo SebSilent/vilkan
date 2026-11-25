@@ -51,8 +51,20 @@ impl Context {
             .unwrap_or_default();
         let has = |name: &std::ffi::CStr| avail.iter().any(|e| e.extension_name_as_c_str() == Ok(name));
         let mut exts: Vec<*const i8> = Vec::new();
-        for name in [ash::khr::surface::NAME, ash::khr::xlib_surface::NAME,
-                     ash::khr::xcb_surface::NAME, ash::khr::wayland_surface::NAME] {
+        // VK_KHR_surface alone is not enough: ash resolves the platform
+        // create_surface entry point from the instance fn table, so the
+        // platform-specific surface extension must be enabled too, or
+        // create_win32_surface_khr (wine) / *_surface_khr (Linux) is NULL
+        // and ash panics with "Unable to load ...". ash only exposes each
+        // platform module on its own target, hence the cfg split.
+        let mut names: Vec<&std::ffi::CStr> = vec![ash::khr::surface::NAME];
+        #[cfg(windows)]
+        names.push(ash::khr::win32_surface::NAME);
+        #[cfg(not(windows))]
+        names.extend_from_slice(&[ash::khr::xlib_surface::NAME,
+                                  ash::khr::xcb_surface::NAME,
+                                  ash::khr::wayland_surface::NAME]);
+        for name in names {
             if has(name) { exts.push(name.as_ptr()); }
         }
         let inst_info = vk::InstanceCreateInfo::default()
