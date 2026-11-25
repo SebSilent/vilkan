@@ -1,6 +1,10 @@
 use std::path::Path;
 
-use anyhow::{Context, Result};
+// `run`'s own failures carry the file they came from through `.context()`, and
+// `run` is Windows code; off Windows only `Result` is named here.
+#[cfg(windows)]
+use anyhow::Context;
+use anyhow::Result;
 
 use crate::{Console, Unimplemented};
 
@@ -42,20 +46,21 @@ pub fn run(
         victory_gpu::mitigations::active_set()
     );
     // A proof-of-concept speed run is labelled so its log can never be
-    // mistaken for a fidelity run. Note the reported display mode is NOT a
-    // measured resolution win: proof5 reported 800x600 and the title still
-    // presented 3840x2160. The real speed lever so far is worker count.
+    // mistaken for a fidelity run. Each lever now names the cost it attacks,
+    // from the proof7 cost table: 99.8% of wall time sits after kernel wait
+    // lines, and 68% of the run is the guest's own 1 ms timeout sleeps, which
+    // no fast-mode switch can remove. The display mode and the window clamp
+    // are kept as behaviour but are NOT claimed as speed wins — proof5
+    // reported 800x600 and still presented 3840x2160, and neither showed a
+    // measured frame-time effect.
     if victory_gpu::mitigations::dev_fast_mode() {
         println!(
-            "dev-fast-mode  ON (display mode reported as {}x{}, workers={}, trail off, probe readback off, window clamp {})",
-            victory_gpu::mitigations::FAST_WIDTH,
-            victory_gpu::mitigations::FAST_HEIGHT,
+            "dev-fast-mode  ON (log={}, workers={} | trail off, probe readback off)",
+            std::env::var("VICTORY_LOG").unwrap_or_else(|_| crate::FAST_LOG.to_string()),
             std::env::var("VICTORY_PIPELINE_WORKERS").unwrap_or_else(|_| "all".into()),
-            if victory_gpu::mitigations::window_clamp_enabled() {
-                "on"
-            } else {
-                "off"
-            }
+        );
+        println!(
+            "               attacks: log filter = our per-wait-line cost (backtrace format, ~0.3ms x 1.06M lines); workers = the synchronous pipeline-compile stall. NOT addressable here: the guest's 1 ms timeout polling (~1058s of a 1556s run). No measured win, not claimed: display mode, window clamp."
         );
     }
 

@@ -128,8 +128,24 @@ enum Console {
     SeriesS,
 }
 
+/// The default filter for a `--dev-fast-mode` run.
+///
+/// Cost table (proof7, 26 min, 1,217,793 lines): 99.8% of the wall time sits
+/// after `victory_hle::modules::kernel` wait lines, and 1,058,340 of them are
+/// one guest thread polling `handle=0x8d8` with `timeout_ms=1` and getting
+/// `result=258` (WAIT_TIMEOUT) every time. Those sleeps are the guest's own
+/// (1.06M x 1ms ~ 1058s = 68% of the run) and fast mode cannot remove them.
+/// The rest — ~495s, up to 32% — is dwell that is not a requested sleep, and
+/// part of that is us formatting a 12-frame guest backtrace into 1.06M WARN
+/// lines (536 MB of log). Quieting that target is the only log-volume lever
+/// that touches the dominant line. An explicit `VICTORY_LOG` still wins.
+const FAST_LOG: &str = "info,victory_hle::modules::kernel=error";
+
 fn main() -> Result<()> {
-    victory_core::logging::init("info");
+    // EnvFilter is read once here, before the CLI is parsed, so the fast-mode
+    // decision has to come from the raw arguments.
+    let fast = std::env::args().any(|a| a == "--dev-fast-mode");
+    victory_core::logging::init(if fast { FAST_LOG } else { "info" });
     // The audio recorder `run` starts for `VILKAN_AUDIO_CAPTURE`.
     #[cfg(all(windows, feature = "diagnostics"))]
     if victory_hle::modules::audio::capture::child() {
