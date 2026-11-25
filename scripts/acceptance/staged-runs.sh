@@ -24,9 +24,19 @@ ROOT="$CSM_ROOT"
 OUT_LOG="$(dirname "$CSM_DATA_DIR")/vilkan-out.log"
 WALL_CAP=$(python3 -c "print(max($CSM_WALL_M3,$CSM_WALL_K2))")
 
-# 0) Verify nothing of ours is running (the ban).
-n=$(ps -eo args | grep -iE 'wineserver|winedevice|xalia|launch.bat|vilkan.exe|proton run|victory_gpu' | grep -v grep | wc -l)
-if [ "$n" != 0 ]; then echo "ABORT: $n processes still running"; exit 1; fi
+# Our Proton prefix: run.sh sets STEAM_COMPAT_DATA_PATH=$VILKAN_DATA/prefix and
+# VILKAN_DATA defaults to the repo-sibling vilkan-data (= dirname of the log dir).
+# Scope every process check/cleanup to THIS prefix so a foreign Wine/Proton app
+# (another game sharing the generic wineserver/winedevice/xalia names) is never
+# counted by the ban nor killed by cleanup.
+OUR_PREFIX="$(dirname "$CSM_DATA_DIR")/prefix"
+export CSM_OUR_PREFIX="$OUR_PREFIX"
+our_pids() { python3 "$HERE/our_procs.py" "$OUR_PREFIX"; }
+our_cleanup() { for p in $(our_pids); do kill -9 "$p" 2>/dev/null; done; }
+
+# 0) Verify nothing of ours is running (the ban), scoped to our prefix.
+n=$(our_pids | wc -l)
+if [ "$n" != 0 ]; then echo "ABORT: $n of OUR processes still running"; our_pids; exit 1; fi
 
 KEYS=$(cat "$CSM_KEYS_FILE")               # configured-saves Enter menu script
 FRAMES=$(python3 -c "import json;a=json.loads('$CSM_CAPTURE_FRAMES_R2');print(','.join(str(t) for t in range(*a)))")
@@ -40,7 +50,7 @@ env VILKAN_GAME_DIR="$CSM_GAME_DIR" \
     timeout --kill-after=10 400 scripts/run.sh
 echo "RUN-R1-EXIT:$?" >> "$B/runR1-start.txt"; date -Is >> "$B/runR1-start.txt"
 sed 's/\x1b\[[0-9;]*m//g' "$OUT_LOG" > "$B/runR1-vilkan-out.log"
-for p in $(pgrep -x wineserver; pgrep -x winedevice.exe; pgrep -x xalia.exe); do kill -9 "$p" 2>/dev/null; done
+our_cleanup
 sleep 3
 
 # R2: capture only, the staged-logging exe.
@@ -157,7 +167,7 @@ iso() {
         timeout --kill-after=10 400 scripts/run.sh
     echo "EXIT:$?" >> "$B/iso-$label-$k-start.txt"
     sed 's/\x1b\[[0-9;]*m//g' "$OUT_LOG" > "$B/iso-$label-$k.log"
-    for p in $(pgrep -x wineserver; pgrep -x winedevice.exe; pgrep -x xalia.exe); do kill -9 "$p" 2>/dev/null; done
+    our_cleanup
     sleep 3
     c=$(grep -ac "$CSM_CRASH_OFFSET" "$B/iso-$label-$k.log")
     [ "$c" -gt 0 ] && cr=$((cr+1))
@@ -233,7 +243,7 @@ moverun() {
       timeout --kill-after=10 400 scripts/run.sh
   echo "EXIT:$?" >> "$B/move-$label-start.txt"
   sed 's/\x1b\[[0-9;]*m//g' "$OUT_LOG" > "$B/move-$label.log"
-  for p in $(pgrep -x wineserver; pgrep -x winedevice.exe; pgrep -x xalia.exe); do kill -9 "$p" 2>/dev/null; done
+  our_cleanup
   sleep 3
 }
 echo "== MOVEMENT: idle baseline (no hold) then input run (mesh+2:W:10):"
@@ -250,7 +260,7 @@ python3 "$HERE/gate_eval.py" \
     "$B/runR1-vilkan-out.log" "$B/runR2-vilkan-out.log" "${MOVEMENT:-FAIL}"
 echo "CURRENT-TREE exit: $?"
 
-# Clean up; verify 0 again.
-for p in $(pgrep -x wineserver; pgrep -x winedevice.exe; pgrep -x xalia.exe); do kill -9 "$p" 2>/dev/null; done
+# Clean up; verify 0 of OURS again (prefix-scoped; a foreign app is untouched).
+our_cleanup
 sleep 2
-echo "procs after: $(ps -eo args | grep -iE 'wineserver|winedevice|xalia|launch.bat|vilkan.exe|victory_gpu' | grep -v grep | wc -l)"
+echo "our procs after: $(our_pids | wc -l)"
