@@ -240,8 +240,11 @@ fn display_size() -> (u32, u32) {
     })
 }
 
-/// The console's mode list: one 4K mode at 60 Hz (the title looks
-/// for a 120 Hz one to allow 120 Hz frame intervals).
+/// The console's mode list: one mode at the size `display_size` reports, at
+/// 120 Hz. The title looks for a 120 Hz mode before allowing 120 Hz frame
+/// intervals, and proof5 paced at 33.333 ms (30 Hz) with only 60 Hz offered,
+/// so the rate is now the one it asks for. Size still follows
+/// `VICTORY_DISPLAY_MODE` (800x600 under dev-fast-mode).
 /// shortcut: fixed mode, not the host display's; report the host's rates if
 /// a title paces by them.
 extern "system" fn modes(
@@ -267,7 +270,7 @@ extern "system" fn modes(
     let mode = Mode {
         width,
         height,
-        refresh: [60, 1],
+        refresh: [120, 1],
         format: 0,
         scanlines: 1, // progressive
         scaling: 0,
@@ -278,11 +281,57 @@ extern "system" fn modes(
     S_OK
 }
 
+/// An output's description: the desktop rectangle it covers (left, top,
+/// right, bottom), whether it is attached, its rotation, its monitor handle.
+/// Same layout as on PC.
+#[repr(C)]
+struct OutputDescription {
+    desktop: [i32; 4],
+    attached: i32,
+    rotation: u32,
+    monitor: usize,
+}
+const _: () = assert!(size_of::<OutputDescription>() == 0x20);
+
+/// The desktop rectangle the output reports: the small frame budget in
+/// dev-fast-mode, else the mode the console reports. Kept consistent with the
+/// mode list on purpose — a rect smaller than the advertised mode is
+/// self-contradictory.
+fn desktop_rect() -> [i32; 4] {
+    let (width, height) = if crate::mitigations::dev_fast_mode() {
+        (crate::mitigations::FAST_WIDTH, crate::mitigations::FAST_HEIGHT)
+    } else {
+        display_size()
+    };
+    [0, 0, width as i32, height as i32]
+}
+
+/// `IDXGIOutput::GetDesc`. Fills a slot that used to answer `E_NOTIMPL`.
+/// Measured note: this title never calls it — the proof5 run logged zero
+/// `method not implemented` lines at all — so this closes a gap for other
+/// titles and patches, it is not the resolution lever.
+extern "system" fn output_description(_: This, out: *mut OutputDescription) -> HRESULT {
+    if out.is_null() {
+        return E_INVALIDARG;
+    }
+    let description = OutputDescription {
+        desktop: desktop_rect(),
+        attached: 1,
+        rotation: 1, // identity
+        monitor: 0,  // no host monitor handle behind a console output
+    };
+    tracing::debug!(desktop = ?description.desktop, "output description reported");
+    // SAFETY: checked non-null; the title passes room for the description.
+    unsafe { out.write(description) };
+    S_OK
+}
+
 /// IUnknown 3, object 4, output 15 (12 as on PC, then 3 console ones).
 static OUTPUT_FUNCTIONS: Table<32> = {
     let mut f = object::missing_table::<OUTPUT, 32>();
     f[0] = output_query as *const ();
     f[6] = output_parent as *const (); // 0x30
+    f[7] = output_description as *const (); // 0x38, GetDesc
     f[21] = modes as *const (); // 0xa8
     Table(f)
 };
