@@ -37,6 +37,9 @@ pub mod dir {
     pub const BASERELOC: usize = 5;
     pub const LOAD_CONFIG: usize = 10;
     pub const BOUND_IMPORT: usize = 11;
+    /// `IMAGE_DIRECTORY_ENTRY_IAT`: the import address table's own range, which
+    /// prepare keeps out of the descriptor count it rewrites.
+    pub const IAT: usize = 12;
 }
 
 /// `IMAGE_FILE_HEADER::Characteristics` flags.

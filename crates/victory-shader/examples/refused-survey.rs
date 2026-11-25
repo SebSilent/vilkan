@@ -1,6 +1,7 @@
 //! Run the owned translation chain over every container the guest pipeline
-//! cache refused, and say for each one what happened: SPIR-V, or the exact
-//! error. The point is to settle whether these shaders fail because the
+//! cache refused, and say for each one what happened: a host shader (a DXIL
+//! container plus its binding model - this chain does not write SPIR-V), or
+//! the exact error. The point is to settle whether these shaders fail because the
 //! translator lacks something (a 64-lane wave it will not widen, an opcode,
 //! the metadata a record does not carry) or because the bytes handed it are
 //! not a container at all - a question the game cannot answer, since the

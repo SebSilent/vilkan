@@ -172,7 +172,12 @@ static VTABLE: Methods<8> = Methods([
     prompt_result as *const (),    // 0x38
 ]);
 
-#[cfg(test)]
+// The one test here is about a drive letter: it reads the path back as `X:\`,
+// which only exists because `folder()` mounts the title folder through the
+// Windows file layer (`super::files`, and its `GetFileAttributesExW` call that
+// proves the drive resolves). Off Windows `folder()` returns none on purpose,
+// so every assertion below would be testing a stand-in.
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
     use crate::modules::xgameruntime::method;

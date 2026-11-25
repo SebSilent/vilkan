@@ -18,9 +18,15 @@
 
 use std::collections::HashMap;
 use std::mem::offset_of;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
+// The device methods that memoise a decision across calls need this only where
+// they exist; off Windows every one of them is a stand-in.
+#[cfg(windows)]
+use std::sync::OnceLock;
 
-use crate::object::{self, E_INVALIDARG, E_NOTIMPL, HRESULT, Iid, Object, PIPELINE, Table, This, guid};
+use crate::object::{
+    self, E_INVALIDARG, E_NOTIMPL, HRESULT, Iid, Object, PIPELINE, Table, This, guid,
+};
 use crate::resource::PAGEABLE_IIDS;
 
 const PIPELINE_IIDS: [Iid; 4] = [
@@ -76,7 +82,8 @@ static SHADERS: Mutex<Option<HashMap<[u8; 32], Arc<Shader>>>> = Mutex::new(None)
 
 /// For the memory lines: containers kept and their bytes, translations
 /// kept and the bytes of their host code. None of them is ever let go.
-static KEPT: [std::sync::atomic::AtomicU64; 4] = [const { std::sync::atomic::AtomicU64::new(0) }; 4];
+static KEPT: [std::sync::atomic::AtomicU64; 4] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 4];
 
 /// What the shader table and the pipeline library keep in memory:
 /// containers and their bytes, translations and their bytes, the bytes of
@@ -149,7 +156,10 @@ impl Shader {
                 }
                 if let Ok(t) = &done {
                     KEPT[2].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    KEPT[3].fetch_add(t.host.dxil.len() as u64, std::sync::atomic::Ordering::Relaxed);
+                    KEPT[3].fetch_add(
+                        t.host.dxil.len() as u64,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
                 }
                 match &done {
                     Ok(t) => tracing::info!(
@@ -260,7 +270,8 @@ fn of_builder(shaders: &[Arc<Shader>]) -> bool {
 #[cfg(windows)]
 pub(crate) fn builder_quarantined(this: This) -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
-    is_builder(this) && *ON.get_or_init(|| std::env::var_os("VICTORY_BVH_QUARANTINE").is_some_and(|v| v == "1"))
+    is_builder(this)
+        && *ON.get_or_init(|| std::env::var_os("VICTORY_BVH_QUARANTINE").is_some_and(|v| v == "1"))
 }
 
 /// Whether the title's pipeline `this` is one of the structure builder's.
@@ -275,7 +286,10 @@ pub(crate) fn builder_off(why: &'static str) {
     let mut b = BUILDER.lock().unwrap_or_else(|e| e.into_inner());
     if !b.off {
         b.off = true;
-        tracing::warn!(why, "the ray-tracing structure builder is turned off for the rest of the run: its stages run all or none");
+        tracing::warn!(
+            why,
+            "the ray-tracing structure builder is turned off for the rest of the run: its stages run all or none"
+        );
     }
 }
 
@@ -480,7 +494,10 @@ pub(crate) fn note_drop(this: This) {
 pub(crate) fn note_why(why: String) {
     crate::capture::op(0, || format!("DROPPED {why}"));
     let mut drops = DROPS.lock().unwrap_or_else(|e| e.into_inner());
-    *drops.get_or_insert_with(HashMap::new).entry(why).or_default() += 1;
+    *drops
+        .get_or_insert_with(HashMap::new)
+        .entry(why)
+        .or_default() += 1;
 }
 
 /// The drops counted since the last call, most first (diagnostics).
@@ -865,9 +882,7 @@ fn slot_regions(record: &CacheRecord, words: usize) -> Vec<String> {
     for word in 1..words {
         // SAFETY: `words` is the documented size of this kind's description.
         let value = unsafe { core::ptr::read_volatile(base.add(word)) };
-        let next = unsafe {
-            core::ptr::read_volatile(base.add(word + 1).min(base.add(words - 1)))
-        };
+        let next = unsafe { core::ptr::read_volatile(base.add(word + 1).min(base.add(words - 1))) };
         let at = value as usize;
         if at < ADDRESS_MIN || at > ADDRESS_MAX || at % 4 != 0 {
             continue;
@@ -875,8 +890,16 @@ fn slot_regions(record: &CacheRecord, words: usize) -> Vec<String> {
         // The size is the NEXT word when it looks like a size: small, and not
         // itself a pointer. Every region here is under 0x1000 bytes.
         let size = usize::try_from(next).unwrap_or(usize::MAX);
-        let len = if size != 0 && size < 0x1_0000 { size.min(CAP) } else { CAP };
-        out.push(format!("+{:#x}[{}]", word * 8, dwords_at(at as *const u8, len)));
+        let len = if size != 0 && size < 0x1_0000 {
+            size.min(CAP)
+        } else {
+            CAP
+        };
+        out.push(format!(
+            "+{:#x}[{}]",
+            word * 8,
+            dwords_at(at as *const u8, len)
+        ));
         if out.len() >= 8 {
             break;
         }
@@ -919,7 +942,11 @@ fn record_addresses(record: &CacheRecord, words: usize) -> Vec<String> {
             continue;
         }
         let code = addr as *const u8;
-        out.push(format!("0x{at:x}=[{}] near[{}]", head48(code), near48(code)));
+        out.push(format!(
+            "0x{at:x}=[{}] near[{}]",
+            head48(code),
+            near48(code)
+        ));
         if out.len() >= 6 {
             break;
         }
@@ -956,7 +983,13 @@ fn head48(code: *const u8) -> String {
     let hex: String = bytes.iter().map(|c| format!("{c:02x}")).collect();
     let text: String = bytes
         .iter()
-        .map(|c| if c.is_ascii_graphic() { *c as char } else { '.' })
+        .map(|c| {
+            if c.is_ascii_graphic() {
+                *c as char
+            } else {
+                '.'
+            }
+        })
         .collect();
     format!("{hex}|{text}")
 }
@@ -995,7 +1028,10 @@ fn near48(code: *const u8) -> String {
             let mut end = String::new();
             if tag == b"DXBC" && p + 12 <= len {
                 // DXBC: magic, four zero bytes, u32 whole-file size.
-                end = format!("/sz{}", u32::from_le_bytes(window[p + 8..p + 12].try_into().unwrap()));
+                end = format!(
+                    "/sz{}",
+                    u32::from_le_bytes(window[p + 8..p + 12].try_into().unwrap())
+                );
             }
             found.push(format!("{}@{rel}{end}", String::from_utf8_lossy(tag)));
         }

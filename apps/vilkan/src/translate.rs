@@ -12,11 +12,11 @@ use anyhow::Result;
 // they are named only where they exist. Everything the batch actually does --
 // read a container, build IR, raise I/O, structure, emit -- is portable and
 // does not depend on either.
+use victory_shader::emit;
 #[cfg(windows)]
 use victory_shader::emit::host::{self, Host};
 #[cfg(windows)]
 use victory_shader::emit::validator::Validator;
-use victory_shader::emit;
 use victory_shader::structure::{self, Atom, LaneExit};
 use victory_shader::{
     Container, FourCC, HwStage, NativeProgram, RootType, ShaderError, ir, native_programs,
@@ -457,12 +457,11 @@ fn translate(
 }
 
 /// Validates an emitted shader if asked to.
-fn check(
-    mut shader: emit::HostShader,
-    t: &mut Tally,
-    checks: &mut Checks,
-    label: impl Fn() -> String,
-) {
+fn check(shader: emit::HostShader, t: &mut Tally, checks: &mut Checks, label: impl Fn() -> String) {
+    // Only the validator rewrites the container, and it is a Windows check:
+    // everywhere else this function reads the shader and never changes it.
+    #[cfg(windows)]
+    let mut shader = shader;
     if let Some(keep) = &checks.keep {
         lock(keep).push((label(), shader.clone()));
     }
@@ -499,8 +498,6 @@ fn check(
     }
     // Off Windows there is no validator to ask, and saying so once at the
     // start of the run covers every shader: the counts below stay at zero.
-    #[cfg(not(windows))]
-    let _ = &shader;
     #[cfg(windows)]
     let Some(v) = checks.validator.as_mut() else {
         return;
