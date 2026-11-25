@@ -178,6 +178,31 @@ pub extern "system" fn CreateWindowExA(
 /// its proportions, and centred; what it shows is scaled to it (the swap
 /// chain stretches).
 fn fit(parent: HWND, x: i32, y: i32, width: i32, height: i32) -> (i32, i32, i32, i32) {
+    // Proof-of-concept speed run: the title sizes its render targets from
+    // this window, so a small top-level window makes it draw small natively
+    // and the 1:1 present copy stays valid. Only a real-sized top-level
+    // window (not a child, not `CW_USEDEFAULT`); never upscales.
+    if parent.is_null() && width > 0 && height > 0 {
+        let (w, h) = victory_gpu::mitigations::fast_size(width as u32, height as u32);
+        if (w, h) != (width as u32, height as u32) {
+            static SAID: AtomicBool = AtomicBool::new(false);
+            if !SAID.swap(true, Ordering::Relaxed) {
+                tracing::info!(width, height, to = ?(w, h), "dev-fast-mode: title window clamped");
+            }
+            // Centre the small window in the work area.
+            let mut area = RECT::default();
+            // SAFETY: `area` receives the primary monitor's work area.
+            let known = unsafe {
+                wm::SystemParametersInfoW(wm::SPI_GETWORKAREA, 0, (&raw mut area).cast(), 0)
+            };
+            if known != 0 {
+                let left = area.left + (area.right - area.left - w as i32) / 2;
+                let top = area.top + (area.bottom - area.top - h as i32) / 2;
+                return (left, top, w as i32, h as i32);
+            }
+            return (x, y, w as i32, h as i32);
+        }
+    }
     let mut area = RECT::default();
     // SAFETY: `area` receives the primary monitor's work area.
     let known =

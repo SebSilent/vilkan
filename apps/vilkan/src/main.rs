@@ -100,6 +100,12 @@ enum Command {
         /// The console model the title sees (device type, memory).
         #[arg(long, value_enum, default_value_t = Console::SeriesX)]
         console: Console,
+        /// Run as fast as possible for proof-of-concept tests: every
+        /// pipeline-compile worker and no per-frame readback. Not a
+        /// fidelity or resolution change (a true downscale needs a
+        /// scaling present blit, its own milestone).
+        #[arg(long)]
+        dev_fast_mode: bool,
         /// Arguments for the title, after `--` (it reads the whole command
         /// line; a title that relaunches itself passes some).
         #[arg(last = true)]
@@ -159,8 +165,34 @@ fn main() -> Result<()> {
             strict,
             execute,
             console,
+            dev_fast_mode,
             title_args: _,
-        } => run::run(&exe, unimplemented, strict, execute, console),
+        } => {
+            if dev_fast_mode {
+                // SAFETY: single-threaded here, before the title or any GPU
+                // or worker thread exists; nothing reads these concurrently.
+                unsafe {
+                    // Use every compile worker unless the user pinned a
+                    // count; the synchronous pipeline-compile stall is the
+                    // per-frame cost this mode attacks.
+                    if std::env::var_os("VICTORY_PIPELINE_WORKERS").is_none() {
+                        std::env::set_var("VICTORY_PIPELINE_WORKERS", "all");
+                    }
+                    // Drop the diagnostic per-resource trail (a mutex + a
+                    // formatted string per host-object event); it records
+                    // nothing the run needs and is off by the same switch
+                    // the code already honours. Only if the user did not.
+                    if std::env::var_os("VICTORY_TRAIL").is_none() {
+                        std::env::set_var("VICTORY_TRAIL", "0");
+                    }
+                    // Read `VILKAN_DEV_FAST_MODE` in the runtime for the
+                    // window clamp, the per-frame readback skip and the
+                    // run-log label.
+                    std::env::set_var("VILKAN_DEV_FAST_MODE", "1");
+                }
+            }
+            run::run(&exe, unimplemented, strict, execute, console)
+        }
         Command::Config => show_config(),
     }
 }

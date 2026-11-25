@@ -41,6 +41,16 @@ pub fn run(
         "mitigations    [{backend}] {}",
         victory_gpu::mitigations::active_set()
     );
+    // A proof-of-concept speed run is labelled so its log can never be
+    // mistaken for a fidelity run. It is not a resolution change.
+    if victory_gpu::mitigations::dev_fast_mode() {
+        println!(
+            "dev-fast-mode  ON (render clamped to {}x{} via window sizing, workers={}, trail off, probe readback off)",
+            victory_gpu::mitigations::FAST_WIDTH,
+            victory_gpu::mitigations::FAST_HEIGHT,
+            std::env::var("VICTORY_PIPELINE_WORKERS").unwrap_or_else(|_| "all".into())
+        );
+    }
 
     let images = cfg.cache_subdir("images")?;
     victory_hle::modules::d3d12x::use_shader_cache(cfg.cache_subdir("shaders")?);

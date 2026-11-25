@@ -5966,6 +5966,16 @@ impl Host {
             return None;
         };
         let (width, height) = (desc.Width as u32, desc.Height);
+        // Proof-of-concept speed run: log the size the game actually
+        // rendered at, once, so the run log shows whether the window clamp
+        // made it draw at the fast size (it sizes its render targets from
+        // the window we create). (reasoning elided)
+        if crate::mitigations::dev_fast_mode() {
+            static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !SAID.swap(true, Ordering::Relaxed) {
+                tracing::info!(width, height, "dev-fast-mode: presented texture size");
+            }
+        }
         let mut presenter = self.presenter.lock().unwrap_or_else(|e| e.into_inner());
         if presenter.is_none() {
             *presenter = match self.presenter(width, height, format) {
@@ -6038,7 +6048,11 @@ impl Host {
                 .then(|| crate::capture::read_back(&self.device, list, texture))
                 .flatten();
             #[cfg(feature = "diagnostics")]
-            let probe = if slot.is_some() { None } else { crate::capture::probe(&self.device, list, texture) };
+            let probe = if slot.is_some() || crate::mitigations::dev_fast_mode() {
+                None
+            } else {
+                crate::capture::probe(&self.device, list, texture)
+            };
             #[cfg(not(feature = "diagnostics"))]
             let _ = frame;
             list.ResourceBarrier(&[
@@ -6374,6 +6388,10 @@ pub(crate) fn transition(
 
 /// A window of the given client size, owned by its own message thread.
 fn window(width: u32, height: u32) -> windows::core::Result<HWND> {
+    // Proof-of-concept speed run: the fallback presenter window is clamped
+    // to the fast size so a small window is what the game presents into
+    // (see `mitigations::fast_size`). (reasoning elided)
+    let (width, height) = crate::mitigations::fast_size(width, height);
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("victory-window".into())
