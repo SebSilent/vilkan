@@ -51,6 +51,11 @@ gen "$T/g6.log" wall=$((WC+1000))
 expect "G6-wall-regression" "$T/base.log" "$T/g6.log" PASS FAIL "G6-wall-time"
 gen "$T/g7.log" crash=1
 expect "G7-1a-persists" "$T/base.log" "$T/g7.log" PASS FAIL "G7-1a-ratio"
+# G7 validity guard: 0 crashes but a run ended short of the world-entry floor ->
+# the ratio is INVALID (the crash window was never exposed), so G7 must FAIL.
+MF=$(python3 -c "import csm_config;print(csm_config.SYNTHETIC['maxframe_min'])")
+gen "$T/g7short.log" maxframe=$((MF-500))
+expect "G7-1a-ratio-invalid-short-run" "$T/base.log" "$T/g7short.log" PASS FAIL "G7-1a-ratio"
 gen "$T/g8.log" mesh=0
 expect "G8-no-mesh" "$T/base.log" "$T/g8.log" PASS FAIL "G8-mesh-progress"
 expect "G9-movement-fail" "$T/base.log" "$T/base2.log" FAIL FAIL "G9-movement"

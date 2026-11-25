@@ -102,7 +102,15 @@ def main():
                   f"R1(q={r1['q']},done={r1['done']},fb={r1['fb']},fail={r1['fail']},present={r1['pool_present']}) "
                   f"R2(q={r2['q']},done={r2['done']},fb={r2['fb']},fail={r2['fail']},present={r2['pool_present']})"))
     gates.append(("G6-wall-time", 0 < mx["wall"] <= WALL_CAP, f"max ms/frame={mx['wall']} cap={WALL_CAP}"))
-    gates.append(("G7-1a-ratio", ratio == 0, f"ratio={ratio}/2"))
+    # A 0/2 crash ratio is only proof the crash is gone if BOTH runs actually
+    # reached the world-entry crash window (maxframe past the floor). A run that
+    # ended early (e.g. suspend-timeout) never exposed the crash, so 0/2 there is
+    # an INVALID ratio, not a PASS. Guard against that false positive.
+    reached = all(r["maxframe"] > MAXFRAME_MIN for r in (r1, r2))
+    g7 = ratio == 0 and reached
+    gates.append(("G7-1a-ratio", g7,
+                  f"ratio={ratio}/2 reached-world={reached} "
+                  f"(maxframe R1={r1['maxframe']} R2={r2['maxframe']} floor={MAXFRAME_MIN})"))
     g8 = all(r["mesh"] > 0 and r["maxframe"] > MAXFRAME_MIN for r in (r1, r2))
     gates.append(("G8-mesh-progress", g8,
                   f"R1(mesh={r1['mesh']},maxframe={r1['maxframe']}) R2(mesh={r2['mesh']},maxframe={r2['maxframe']})"))
