@@ -41,12 +41,16 @@ if [ "$n" != 0 ]; then echo "ABORT: $n of OUR processes still running"; our_pids
 KEYS=$(cat "$CSM_KEYS_FILE")               # configured-saves Enter menu script
 FRAMES=$(python3 -c "import json;a=json.loads('$CSM_CAPTURE_FRAMES_R2');print(','.join(str(t) for t in range(*a)))")
 
+# Every run below sets VICTORY_CLOSE_ENDS=0 EXPLICITLY (not relying on the
+# lifecycle.rs default): an external SC_CLOSE must never end a headless run;
+# the harness `timeout` is the only authority. See synthetic_validity.py.
+#
 # R1: no capture (the fault gate), VICTORY_INDIRECT=1. First of >=2 runs for
 # the 1a crash ratio (the first-use budget fix must drop it).
 date -Is > "$B/runR1-start.txt"
 cd "$ROOT/vilkan"
 env VILKAN_GAME_DIR="$CSM_GAME_DIR" \
-    VICTORY_INDIRECT=1 VICTORY_KEYS="$KEYS" \
+    VICTORY_INDIRECT=1 VICTORY_KEYS="$KEYS" VICTORY_CLOSE_ENDS=0 \
     timeout --kill-after=10 400 scripts/run.sh
 echo "RUN-R1-EXIT:$?" >> "$B/runR1-start.txt"; date -Is >> "$B/runR1-start.txt"
 sed 's/\x1b\[[0-9;]*m//g' "$OUT_LOG" > "$B/runR1-vilkan-out.log"
@@ -57,7 +61,7 @@ sleep 3
 date -Is > "$B/runR2-start.txt"
 cd "$ROOT/vilkan"
 env VILKAN_GAME_DIR="$CSM_GAME_DIR" \
-    VICTORY_INDIRECT=1 VICTORY_KEYS="$KEYS" \
+    VICTORY_INDIRECT=1 VICTORY_KEYS="$KEYS" VICTORY_CLOSE_ENDS=0 \
     VICTORY_CAPTURE="$CSM_CAPTURE_ROOT_WIN" \
     VICTORY_CAPTURE_FRAMES="$FRAMES" \
     timeout --kill-after=10 400 scripts/run.sh
@@ -163,7 +167,7 @@ iso() {
     date -Is > "$B/iso-$label-$k-start.txt"
     cd "$ROOT/vilkan"
     env VILKAN_GAME_DIR="$CSM_GAME_DIR" \
-        VICTORY_INDIRECT=1 VICTORY_KEYS="$KEYS" "$@" \
+        VICTORY_INDIRECT=1 VICTORY_KEYS="$KEYS" VICTORY_CLOSE_ENDS=0 "$@" \
         timeout --kill-after=10 400 scripts/run.sh
     echo "EXIT:$?" >> "$B/iso-$label-$k-start.txt"
     sed 's/\x1b\[[0-9;]*m//g' "$OUT_LOG" > "$B/iso-$label-$k.log"
@@ -237,7 +241,7 @@ moverun() {
   date -Is > "$B/move-$label-start.txt"
   cd "$ROOT/vilkan"
   env VILKAN_GAME_DIR="$CSM_GAME_DIR" \
-      VICTORY_INDIRECT=1 VICTORY_KEYS="$keys" \
+      VICTORY_INDIRECT=1 VICTORY_KEYS="$keys" VICTORY_CLOSE_ENDS=0 \
       VICTORY_CAPTURE="${CSM_CAPTURE_ROOT_WIN}\\${wdir}" \
       VICTORY_CAPTURE_FRAMES="$MOVE_FRAMES" \
       timeout --kill-after=10 400 scripts/run.sh
