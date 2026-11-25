@@ -9,11 +9,11 @@
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard, OnceLock};
-use std::time::{Duration, Instant};
+use std::sync::{Mutex, MutexGuard};
+use std::time::Duration;
 
 use windows_sys::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetCurrentThreadId, TerminateProcess};
+use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
 use windows_sys::Win32::UI::WindowsAndMessaging::{self as wm, HMENU};
 use windows_sys::core::{PCSTR, PCWSTR, w};
 
@@ -32,26 +32,6 @@ fn routines() -> MutexGuard<'static, Vec<(usize, Routine, usize)>> {
 const SUSPEND_DEADLINE: Duration = Duration::from_secs(1);
 
 const ERROR_INVALID_PARAMETER: u32 = 87;
-
-/// Process start, for SC_CLOSE elapsed-time provenance.
-static START: OnceLock<Instant> = OnceLock::new();
-/// Every SC_CLOSE seen, counted so ignoring one never silently hides a
-/// title-initiated exit (the count and per-event provenance stay in the log).
-static SC_CLOSE_COUNT: AtomicUsize = AtomicUsize::new(0);
-
-/// Opt-in: does an external window close (SC_CLOSE) end the title? Default OFF,
-/// so a headless run cannot be ended by an outside close — the harness `timeout`
-/// stays authoritative. Set `VICTORY_CLOSE_ENDS=1` to restore close-ends-title
-/// (interactive use). Read once.
-fn close_ends() -> bool {
-    static ENDS: OnceLock<bool> = OnceLock::new();
-    *ENDS.get_or_init(|| {
-        matches!(
-            std::env::var("VICTORY_CLOSE_ENDS").as_deref(),
-            Ok("1") | Ok("true") | Ok("on") | Ok("yes")
-        )
-    })
-}
 
 pub extern "system" fn RegisterAppStateChangeNotification(
     routine: Option<Routine>,
@@ -79,42 +59,6 @@ pub extern "system" fn UnregisterAppStateChangeNotification(registration: usize)
 /// The window procedure a title window had before ours.
 const TITLE_PROC: PCWSTR = w!("victory.wndproc");
 
-/// The visible backend suffix for the runner window (" (DX12)" / " (Vulkan)"),
-/// matching the startup log. The title's own exe and files are untouched —
-/// this only labels the window we host. Default DX12 (VILKAN_BACKEND).
-fn backend_suffix() -> &'static str {
-    match std::env::var("VILKAN_BACKEND").as_deref() {
-        Ok("vulkan") => " (Vulkan)",
-        _ => " (DX12)",
-    }
-}
-
-/// The title's wide window name with the backend suffix appended.
-fn backend_window_name_w(name: PCWSTR) -> Vec<u16> {
-    // SAFETY: the title passes a NUL-terminated wide name (or null).
-    let mut buf: Vec<u16> = if name.is_null() {
-        Vec::new()
-    } else {
-        unsafe { (0..).take_while(|&i| *name.add(i) != 0).map(|i| *name.add(i)).collect() }
-    };
-    buf.extend(backend_suffix().encode_utf16());
-    buf.push(0);
-    buf
-}
-
-/// The title's narrow window name with the backend suffix appended.
-fn backend_window_name_a(name: PCSTR) -> Vec<u8> {
-    // SAFETY: the title passes a NUL-terminated narrow name (or null).
-    let mut buf: Vec<u8> = if name.is_null() {
-        Vec::new()
-    } else {
-        unsafe { (0..).take_while(|&i| *name.add(i) != 0).map(|i| *name.add(i)).collect() }
-    };
-    buf.extend(backend_suffix().bytes());
-    buf.push(0);
-    buf
-}
-
 pub extern "system" fn CreateWindowExW(
     ex_style: u32,
     class: PCWSTR,
@@ -130,10 +74,7 @@ pub extern "system" fn CreateWindowExW(
     param: *const c_void,
 ) -> HWND {
     let (x, y, width, height) = fit(parent, x, y, width, height);
-    let name_buf = backend_window_name_w(name);
-    let name: PCWSTR = name_buf.as_ptr();
-    // SAFETY: the title's own arguments, forwarded (the size fitted, the
-    // name labelled); name_buf lives through the call.
+    // SAFETY: the title's own arguments, forwarded (the size fitted).
     let hwnd = unsafe {
         wm::CreateWindowExW(
             ex_style, class, name, style, x, y, width, height, parent, menu, instance, param,
@@ -159,10 +100,7 @@ pub extern "system" fn CreateWindowExA(
     param: *const c_void,
 ) -> HWND {
     let (x, y, width, height) = fit(parent, x, y, width, height);
-    let name_buf = backend_window_name_a(name);
-    let name: PCSTR = name_buf.as_ptr();
-    // SAFETY: the title's own arguments, forwarded (the size fitted, the
-    // name labelled); name_buf lives through the call.
+    // SAFETY: the title's own arguments, forwarded (the size fitted).
     let hwnd = unsafe {
         wm::CreateWindowExA(
             ex_style, class, name, style, x, y, width, height, parent, menu, instance, param,
@@ -172,7 +110,8 @@ pub extern "system" fn CreateWindowExA(
     hwnd
 }
 
-/// A console title sizes its window to its render target (Chores Simulator Miami: 3840x2160 on a Series X), which can exceed the host's screen.
+/// A console title sizes its window to its render target (
+/// the title: 3840x2160 on a Series X), which can exceed the host's screen.
 /// A top-level window larger than the work area is shrunk to fit, keeping
 /// its proportions, and centred; what it shows is scaled to it (the swap
 /// chain stretches).
@@ -229,47 +168,19 @@ extern "system" fn window_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    // Mark boot on the first message the window receives (creation is early),
-    // so SC_CLOSE elapsed-time provenance is measured from window creation.
-    START.get_or_init(Instant::now);
     // A user close (close button, Alt+F4, window or taskbar menu); a
     // console title never sees one, nor a WM_CLOSE from it.
     if message == wm::WM_SYSCOMMAND && wparam & 0xFFF0 == wm::SC_CLOSE as usize {
-        let start = *START.get_or_init(Instant::now);
-        let n = SC_CLOSE_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-        // SAFETY: returns the calling thread's id; no memory touched.
-        let thread = unsafe { GetCurrentThreadId() };
-        let elapsed = start.elapsed().as_millis();
-        let fatal = victory_loader::last_fatal();
-        let crashes = victory_loader::crash_count();
-        if close_ends() {
-            tracing::warn!(
-                wparam = format_args!("{wparam:#x}"),
-                lparam = format_args!("{lparam:#x}"),
-                thread,
-                elapsed_ms = elapsed,
-                count = n,
-                preceding_crashes = crashes,
-                preceding_fatal = fatal.as_deref().unwrap_or("none"),
-                "SC_CLOSE received: VICTORY_CLOSE_ENDS on, ending the title"
-            );
-            end_title("window closed", Box::new(|| {}));
-            return 0;
-        }
-        // Default: an external close must NOT end a headless run. Log full
-        // provenance (and any preceding fatal, so a title-initiated exit that
-        // faulted just before the close is never hidden), count it, and swallow
-        // it — the harness `timeout` remains the only authority that ends a run.
-        tracing::warn!(
-            wparam = format_args!("{wparam:#x}"),
-            lparam = format_args!("{lparam:#x}"),
-            thread,
-            elapsed_ms = elapsed,
-            count = n,
-            preceding_crashes = crashes,
-            preceding_fatal = fatal.as_deref().unwrap_or("none"),
-            "SC_CLOSE ignored (VICTORY_CLOSE_ENDS off); run continues, timeout authoritative"
-        );
+        end_title("window closed", Box::new(|| {}));
+        return 0;
+    }
+    // Alt or F10 puts a window into menu mode: the system runs a modal menu
+    // loop on the thread that owns the window, which is the title's. The
+    // title then stops (no frames, no input) until a key ends the loop, and
+    // nothing shows it, since the window has no menu bar;
+    // the title aborts itself about half a minute later. A console has no window
+    // menu. The mouse still opens it from the title bar.
+    if message == wm::WM_SYSCOMMAND && wparam & 0xFFF0 == wm::SC_KEYMENU as usize {
         return 0;
     }
     // SAFETY: the procedure `hook` stored, called the way the system would.
@@ -375,6 +286,9 @@ pub fn wait_for_previous() {
 }
 
 fn end() {
+    // Compiled host pipelines kept for the next run.
+    #[cfg(windows)]
+    victory_gpu::pipeline::save_pipeline_cache();
     // SAFETY: ends this process, as the console ends a suspended title.
     unsafe { TerminateProcess(GetCurrentProcess(), 0) };
 }
@@ -460,5 +374,65 @@ mod tests {
             assert!(!wm::GetPropW(hwnd, TITLE_PROC).is_null());
             wm::DestroyWindow(hwnd);
         }
+    }
+
+    thread_local! {
+        /// The system commands `recording` received, low four bits cleared.
+        static COMMANDS: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    /// Stands in for a title's procedure: notes system commands and acts
+    /// on none of them (no menu loop, no minimising).
+    extern "system" fn recording(
+        hwnd: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        if message == wm::WM_SYSCOMMAND {
+            COMMANDS.with(|c| c.borrow_mut().push(wparam & 0xFFF0));
+            return 0;
+        }
+        // SAFETY: the system's default procedure, called as the system would.
+        unsafe { wm::DefWindowProcW(hwnd, message, wparam, lparam) }
+    }
+
+    #[test]
+    fn the_keyboard_menu_never_reaches_the_title() {
+        let null = std::ptr::null_mut();
+        let hwnd = CreateWindowExW(
+            0,
+            w!("STATIC"),
+            w!("menu"),
+            0,
+            0,
+            0,
+            10,
+            10,
+            null,
+            null,
+            null,
+            std::ptr::null(),
+        );
+        assert!(!hwnd.is_null());
+        // SAFETY: our window, owned by this thread, so each message is
+        // handled before SendMessageW returns. `recording` stands in for the
+        // title's procedure and the original is put back before the window
+        // is destroyed.
+        unsafe {
+            let title = wm::GetPropW(hwnd, TITLE_PROC);
+            wm::SetPropW(hwnd, TITLE_PROC, recording as *const () as *mut c_void);
+            let command = |c: u32, key: u8| {
+                wm::SendMessageW(hwnd, wm::WM_SYSCOMMAND, c as usize, LPARAM::from(key))
+            };
+            command(wm::SC_KEYMENU, 0); // Alt or F10
+            command(wm::SC_KEYMENU, b' '); // Alt+Space
+            command(wm::SC_KEYMENU | 1, 0); // the low bits are the system's
+            command(wm::SC_MINIMIZE, 0);
+            wm::SetPropW(hwnd, TITLE_PROC, title);
+            wm::DestroyWindow(hwnd);
+        }
+        let seen = COMMANDS.with(|c| c.borrow().clone());
+        assert_eq!(seen, [wm::SC_MINIMIZE as usize]);
     }
 }
