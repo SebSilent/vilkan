@@ -62,20 +62,40 @@ pub fn dev_fast_mode() -> bool {
     }
 }
 
-/// The proof-of-concept render size for [`dev_fast_mode`]. (reasoning elided)
-/// The game sizes its render targets from its own window, so both
-/// window-creation paths (the title's `CreateWindowEx` in the HLE layer and
-/// the host presenter's fallback window) clamp to this when fast mode is on;
-/// the game then draws small natively and the 1:1 `CopyResource` in
-/// `present` stays valid (no scaling blit needed). Never upscales.
+/// The proof-of-concept size for [`dev_fast_mode`]. (reasoning elided)
+/// Reported as the display mode under fast mode (see
+/// `crate::dxgi::display_size` via `VICTORY_DISPLAY_MODE`) and used for
+/// window geometry only behind [`window_clamp_enabled`].
+///
+/// Neither makes the title render smaller: proof5  reported
+/// 800x600 in the mode list and the title still presented 3840x2160, so its
+/// back buffer size comes from somewhere else. The open question is *which*
+/// API hands it 4K — the mode list and the window are both ruled out.
 pub const FAST_WIDTH: u32 = 800;
 /// See [`FAST_WIDTH`].
 pub const FAST_HEIGHT: u32 = 600;
 
+/// Window geometry is NOT a resolution lever. Proof4 (`cf2ce4a`) clamped the
+/// title's top-level window to [`FAST_WIDTH`]x[`FAST_HEIGHT`] and the title
+/// still presented 3840x2160, so the clamp buys no resolution. It is not
+/// measurably harmful either: proof4 (clamp on) medianed 0.4 fps and proof5
+/// (clamp off) medianed 0.3 fps at the same presented size — an earlier
+/// "18.4 fps" reading for proof5 was taken from a partial log during an easy
+/// startup phase and is retracted. Off by default because it achieves
+/// nothing; opt in only to study window behaviour.
+pub fn window_clamp_enabled() -> bool {
+    dev_fast_mode()
+        && matches!(
+            std::env::var("VILKAN_FAST_CLAMP").as_deref(),
+            Ok("1") | Ok("true") | Ok("yes")
+        )
+}
+
 /// `width` x `height` clamped to [`FAST_WIDTH`] x [`FAST_HEIGHT`] when
-/// [`dev_fast_mode`] is on (never larger than asked), else unchanged.
+/// [`dev_fast_mode`] is on **and** [`window_clamp_enabled`] opts in (never
+/// larger than asked), else unchanged.
 pub fn fast_size(width: u32, height: u32) -> (u32, u32) {
-    if dev_fast_mode() {
+    if window_clamp_enabled() {
         (width.min(FAST_WIDTH), height.min(FAST_HEIGHT))
     } else {
         (width, height)

@@ -101,9 +101,10 @@ enum Command {
         #[arg(long, value_enum, default_value_t = Console::SeriesX)]
         console: Console,
         /// Run as fast as possible for proof-of-concept tests: every
-        /// pipeline-compile worker and no per-frame readback. Not a
-        /// fidelity or resolution change (a true downscale needs a
-        /// scaling present blit, its own milestone).
+        /// pipeline-compile worker, no per-frame readback, and a small
+        /// display mode reported to the title (`VICTORY_DISPLAY_MODE`,
+        /// 800x600 unless you set one) — the title sizes its render targets
+        /// from that mode, not from its window. Not a fidelity run.
         #[arg(long)]
         dev_fast_mode: bool,
         /// Arguments for the title, after `--` (it reads the whole command
@@ -185,9 +186,26 @@ fn main() -> Result<()> {
                     if std::env::var_os("VICTORY_TRAIL").is_none() {
                         std::env::set_var("VICTORY_TRAIL", "0");
                     }
+                    // Report a small display mode instead of 3840x2160, so a
+                    // title that honours the mode it is given renders
+                    // smaller. CSM does not: proof5 reported 800x600 and
+                    // still presented 3840x2160, so this is not yet a
+                    // resolution win — it is the correct console behaviour
+                    // and the hook the scaling-blit milestone will be judged
+                    // against. Kept because it costs nothing and is env-only
+                    // (a user-set mode still wins).
+                    if std::env::var_os("VICTORY_DISPLAY_MODE").is_none() {
+                        std::env::set_var(
+                            "VICTORY_DISPLAY_MODE",
+                            format!(
+                                "{}x{}",
+                                victory_gpu::mitigations::FAST_WIDTH,
+                                victory_gpu::mitigations::FAST_HEIGHT
+                            ),
+                        );
+                    }
                     // Read `VILKAN_DEV_FAST_MODE` in the runtime for the
-                    // window clamp, the per-frame readback skip and the
-                    // run-log label.
+                    // per-frame readback skip and the run-log label.
                     std::env::set_var("VILKAN_DEV_FAST_MODE", "1");
                 }
             }

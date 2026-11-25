@@ -5966,10 +5966,10 @@ impl Host {
             return None;
         };
         let (width, height) = (desc.Width as u32, desc.Height);
-        // Proof-of-concept speed run: log the size the game actually
-        // rendered at, once, so the run log shows whether the window clamp
-        // made it draw at the fast size (it sizes its render targets from
-        // the window we create). (reasoning elided)
+        // Log the size the game actually presented, once. Both levers tried
+        // so far failed to change it: the window clamp (proof4) and the
+        // reported display mode (proof5) each still produced 3840x2160, so
+        // the title takes its back buffer size from another source.
         if crate::mitigations::dev_fast_mode() {
             static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
             if !SAID.swap(true, Ordering::Relaxed) {

@@ -42,13 +42,20 @@ pub fn run(
         victory_gpu::mitigations::active_set()
     );
     // A proof-of-concept speed run is labelled so its log can never be
-    // mistaken for a fidelity run. It is not a resolution change.
+    // mistaken for a fidelity run. Note the reported display mode is NOT a
+    // measured resolution win: proof5 reported 800x600 and the title still
+    // presented 3840x2160. The real speed lever so far is worker count.
     if victory_gpu::mitigations::dev_fast_mode() {
         println!(
-            "dev-fast-mode  ON (render clamped to {}x{} via window sizing, workers={}, trail off, probe readback off)",
+            "dev-fast-mode  ON (display mode reported as {}x{}, workers={}, trail off, probe readback off, window clamp {})",
             victory_gpu::mitigations::FAST_WIDTH,
             victory_gpu::mitigations::FAST_HEIGHT,
-            std::env::var("VICTORY_PIPELINE_WORKERS").unwrap_or_else(|_| "all".into())
+            std::env::var("VICTORY_PIPELINE_WORKERS").unwrap_or_else(|_| "all".into()),
+            if victory_gpu::mitigations::window_clamp_enabled() {
+                "on"
+            } else {
+                "off"
+            }
         );
     }
 
