@@ -51,6 +51,9 @@ tempfile.workspace = true
 [features]
 # Debugging switches (scripted keys and the like).
 diagnostics = ["victory-gpu/diagnostics", "victory-loader/diagnostics", "dep:windows", "dep:windows-core"]
+# Split each wait into sleep / our own logging / silent guest execution
+# (`modules::kernel::timing`). Off by default: a plain build is unaffected.
+hle-timing = []
 
 [lints]
 workspace = true

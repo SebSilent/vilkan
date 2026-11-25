@@ -320,11 +320,89 @@ pub extern "system" fn WaitOnAddress(
     r
 }
 
+/// Splits a wait into its three cost centres for the fast-mode cost table.
+///
+/// The log's dwell between lines mixes them together and cannot tell them
+/// apart: the sleep the guest asked for, our own logging of it (every wait
+/// line carries a guest backtrace, and a 26-minute run writes 1.06M of those
+/// lines), and whatever the guest executed silently in between. Dwell alone
+/// charged all three to "the HLE call". This measures each separately:
+///
+/// * `waited_us` — inside the OS wait.
+/// * `host_us`   — inside the HLE body, enter to exit, wait included.
+///   `host_us - waited_us` is our overhead: dispatch plus the log line.
+/// * `guest_us`  — from this thread leaving its previous HLE call to entering
+///   this one. Guest execution we never see in the log, and it is *not*
+///   charged to the call any more.
+///
+/// Aggregated per thread and flushed as one line every [`FLUSH`] calls, so
+/// the instrumentation does not become the thing it measures. Compiled out
+/// unless the `hle-timing` feature is on: a plain build is unaffected.
+#[cfg(feature = "hle-timing")]
+mod timing {
+    use std::cell::Cell;
+    use std::time::{Duration, Instant};
+
+    const FLUSH: u64 = 4096;
+
+    thread_local! {
+        static LAST_EXIT: Cell<Option<Instant>> = const { Cell::new(None) };
+        static CALLS: Cell<u64> = const { Cell::new(0) };
+        static WAITED: Cell<u64> = const { Cell::new(0) };
+        static HOST: Cell<u64> = const { Cell::new(0) };
+        static GUEST: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub struct Entry {
+        guest: Duration,
+        started: Instant,
+    }
+
+    #[inline]
+    pub fn enter() -> Entry {
+        let started = Instant::now();
+        let guest = LAST_EXIT.with(|c| {
+            c.get()
+                .map(|prev| started.duration_since(prev))
+                .unwrap_or_default()
+        });
+        Entry { guest, started }
+    }
+
+    /// Closes an entry taken before the wait. `waited` is the OS wait alone.
+    #[inline]
+    pub fn exit(e: Entry, waited: Duration) {
+        let host = e.started.elapsed();
+        LAST_EXIT.with(|c| c.set(Some(Instant::now())));
+        CALLS.with(|c| c.set(c.get() + 1));
+        WAITED.with(|c| c.set(c.get() + waited.as_micros() as u64));
+        HOST.with(|c| c.set(c.get() + host.as_micros() as u64));
+        GUEST.with(|c| c.set(c.get() + e.guest.as_micros() as u64));
+        if CALLS.with(|c| c.get()) >= FLUSH {
+            let calls = CALLS.with(|c| c.replace(0));
+            let waited = WAITED.with(|c| c.replace(0));
+            let host = HOST.with(|c| c.replace(0));
+            let guest = GUEST.with(|c| c.replace(0));
+            tracing::info!(
+                calls,
+                waited_us = waited,
+                host_us = host,
+                // Our own share: dispatch plus formatting the wait line.
+                log_us = host.saturating_sub(waited),
+                guest_us = guest,
+                "hle wait timing split"
+            );
+        }
+    }
+}
+
 /// The title's event wait (`WaitForSingleObject`): logged when it blocks
 /// over a second or times out, to name the stall the fps breakdown leaves
 /// unaccounted (a 13.7 s frame measured only ~5 ms of GPU/preparing work).
 /// Forwards unchanged.
 pub extern "system" fn WaitForSingleObject(handle: *mut c_void, ms: u32) -> u32 {
+    #[cfg(feature = "hle-timing")]
+    let entry = timing::enter();
     let started = std::time::Instant::now();
     let r = host::wait_for_single_object(handle, ms);
     let waited = started.elapsed();
@@ -338,6 +416,8 @@ pub extern "system" fn WaitForSingleObject(handle: *mut c_void, ms: u32) -> u32 
             "WaitForSingleObject blocked"
         );
     }
+    #[cfg(feature = "hle-timing")]
+    timing::exit(entry, waited);
     r
 }
 
@@ -798,6 +878,11 @@ mod host {
 mod tests {
     use super::*;
 
+    // What a title image reports as its path is the Windows path it was loaded
+    // from; off Windows the call answers with this host's own executable, so
+    // both assertions here (the `C:\title\game.exe` round-trip and the `C:\`
+    // truncation) describe a host that has no such image.
+    #[cfg(windows)]
     #[test]
     fn title_images_report_their_original_path() {
         let base = 0x7000_0000_0000;
@@ -856,6 +941,10 @@ mod tests {
         );
     }
 
+    // Finds the title's DLLs by name in the loaded-module list, from a title
+    // image path: off Windows nothing is loaded and the list is empty, so the
+    // lookups below have nothing to find.
+    #[cfg(windows)]
     #[test]
     fn title_dlls_and_pseudo_modules_are_found_by_name() {
         let base = 0x7100_0000_0000usize;
