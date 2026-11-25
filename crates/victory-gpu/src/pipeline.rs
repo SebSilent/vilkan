@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::mem::offset_of;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::object::{self, E_INVALIDARG, HRESULT, Iid, Object, PIPELINE, Table, This, guid};
+use crate::object::{self, E_INVALIDARG, E_NOTIMPL, HRESULT, Iid, Object, PIPELINE, Table, This, guid};
 use crate::resource::PAGEABLE_IIDS;
 
 const PIPELINE_IIDS: [Iid; 4] = [
@@ -720,6 +720,7 @@ fn program(slot: &CacheSlot) -> Option<Bytecode> {
 /// dropped; when a record yields nothing, what it really holds is logged a
 /// few times per kind, so the format is derived from the title's own data
 /// instead of assumed again.
+#[allow(dead_code)] // kept as the measurement behind the reverted slot, not its answer
 fn cache_stages(
     kind: &'static str,
     record: &CacheRecord,
@@ -767,34 +768,30 @@ fn unmatched(kind: &'static str, record: &CacheRecord) {
 ///
 /// A record that builds nothing still hands out a pipeline: the title reads
 /// the object back without a null check (five-star found a null here fault
-/// the story-mode load), so it becomes a pipeline with no stages, which
-/// drops its draws the way a missing one does today. Until the graphics
-/// description's slot area is matched by the DXBC check above, that is what
-/// every one of these calls does — and the reason is logged, not hidden.
+/// the story-mode load). Building a pipeline from that unproven parse is what
+/// this function no longer does; see the note in its body. [`cache_stages`]
+/// and the DXBC check it reports are kept as the measurement, not the answer.
 pub(crate) extern "system" fn create_graphics_cache(
     _: This,
     record: *const CacheRecord,
-    iid: *const Iid,
+    _iid: *const Iid,
     out: *mut This,
 ) -> HRESULT {
+    // Reverted to the last known-good answer: `out` null, `E_NOTIMPL`. The
+    // record was built as a pipeline from a slot layout this tree later
+    // measured and found wrong (the code it hands the compiler is raw ISA
+    // with no DXBC header, and the metadata fields are not yet mapped), so
+    // constructing a pipeline from it fed the compiler garbage and the menu
+    // stopped loading. Measuring the record stays; answering it does not.
+    if !out.is_null() {
+        // SAFETY: the title's own out pointer.
+        unsafe { *out = std::ptr::null_mut() };
+    }
     // SAFETY: the title passes a record of the documented size.
-    let Some(r) = (unsafe { record.as_ref() }) else {
-        return hand_out(
-            Vec::new(),
-            #[cfg(windows)]
-            None,
-            iid,
-            out,
-        );
-    };
-    counted("graphics", r);
-    hand_out(
-        cache_stages("graphics", r, &CACHE_STAGES),
-        #[cfg(windows)]
-        None,
-        iid,
-        out,
-    )
+    if let Some(r) = unsafe { record.as_ref() } {
+        counted("graphics", r);
+    }
+    E_NOTIMPL
 }
 
 /// Device method 0x218: a compute pipeline of the title's pipeline cache,
@@ -802,27 +799,21 @@ pub(crate) extern "system" fn create_graphics_cache(
 pub(crate) extern "system" fn create_compute_cache(
     _: This,
     record: *const CacheRecord,
-    iid: *const Iid,
+    _iid: *const Iid,
     out: *mut This,
 ) -> HRESULT {
+    // Reverted with the graphics slot above: `out` null, `E_NOTIMPL`, the
+    // answer the title saw before the pipeline-cache records were built. The
+    // dump below is what proved the layout, and it stays.
+    if !out.is_null() {
+        // SAFETY: the title's own out pointer.
+        unsafe { *out = std::ptr::null_mut() };
+    }
     // SAFETY: the title passes a record of the documented size.
-    let Some(r) = (unsafe { record.as_ref() }) else {
-        return hand_out(
-            Vec::new(),
-            #[cfg(windows)]
-            None,
-            iid,
-            out,
-        );
-    };
-    counted("compute", r);
-    hand_out(
-        cache_stages("compute", r, &[Some("compute")]),
-        #[cfg(windows)]
-        None,
-        iid,
-        out,
-    )
+    if let Some(r) = unsafe { record.as_ref() } {
+        counted("compute", r);
+    }
+    E_NOTIMPL
 }
 
 /// The size of every slot of the first records, so that the order assumed
