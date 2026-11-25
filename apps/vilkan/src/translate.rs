@@ -7,8 +7,16 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::Result;
+// The two things after emission are host *checks*, not translation: `host`
+// creates D3D12 pipelines and `validator` loads dxil.dll. Both are Win32, so
+// they are named only where they exist. Everything the batch actually does --
+// read a container, build IR, raise I/O, structure, emit -- is portable and
+// does not depend on either.
+#[cfg(windows)]
 use victory_shader::emit::host::{self, Host};
-use victory_shader::emit::{self, validator::Validator};
+#[cfg(windows)]
+use victory_shader::emit::validator::Validator;
+use victory_shader::emit;
 use victory_shader::structure::{self, Atom, LaneExit};
 use victory_shader::{
     Container, FourCC, HwStage, NativeProgram, RootType, ShaderError, ir, native_programs,
@@ -148,7 +156,11 @@ struct Checks {
     /// Shaders named in `VILKAN_PAIRS` (`vs+ps,...`, label substrings),
     /// kept to build those pipelines after the walk.
     keep: Option<Kept>,
+    /// The DXIL validator: dxil.dll loaded through Win32.
+    #[cfg(windows)]
     validator: Option<Validator>,
+    /// A host D3D12 device, to create a pipeline for what was emitted.
+    #[cfg(windows)]
     host: Option<(Host, emit::HostShader)>,
 }
 
@@ -160,7 +172,11 @@ pub fn run(
     jobs: Option<usize>,
 ) -> Result<()> {
     let paths = crate::default_paths(paths)?;
+    // `dll` stays in scope for the whole run: every worker loads its own
+    // validator from it.
+    #[cfg(windows)]
     let dll = validate.then(Validator::default_path).flatten();
+    #[cfg(windows)]
     if validate {
         Validator::load(dll.as_deref()).map_err(anyhow::Error::msg)?;
         println!(
@@ -169,8 +185,21 @@ pub fn run(
                 .map_or("dxil.dll".into(), |p| p.display().to_string())
         );
     }
+    #[cfg(windows)]
     if pipelines {
         Host::new(false).map_err(anyhow::Error::msg)?;
+    }
+    // A check this host cannot run is said so, not counted as passed: the
+    // batch goes on translating and the validated/pipeline columns stay at
+    // zero, which is what happened.
+    #[cfg(not(windows))]
+    if validate || pipelines {
+        let asked = match (validate, pipelines) {
+            (true, true) => "the DXIL validator and the host pipeline check",
+            (true, false) => "the DXIL validator",
+            _ => "the host pipeline check",
+        };
+        println!("checks       {asked}: Windows-only, not run on this host");
     }
     let pairs: Vec<(String, String)> = std::env::var("VILKAN_PAIRS")
         .unwrap_or_default()
@@ -203,6 +232,9 @@ pub fn run(
                             list,
                             ..Tally::default()
                         };
+                        // One set of checks per thread: the validator and the
+                        // device are not shareable across threads.
+                        #[cfg(windows)]
                         let mut checks = Checks {
                             keep: (!pairs.is_empty()).then(|| kept.clone()),
                             validator: validate
@@ -211,6 +243,10 @@ pub fn run(
                             host: pipelines
                                 .then(|| Host::new(false).ok().map(|h| (h, host::stub_ps())))
                                 .flatten(),
+                        };
+                        #[cfg(not(windows))]
+                        let mut checks = Checks {
+                            keep: (!pairs.is_empty()).then(|| kept.clone()),
                         };
                         while let Some(job) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) {
                             translate(job, entry.path(), &seen, &mut t, &mut checks);
@@ -270,6 +306,8 @@ pub fn run(
         "             {} emitted of {} mesh programs; {} validated, {} pipelines",
         t.ms_emitted, t.ms_programs, t.ms_validated, t.ms_pipelines
     );
+    // Building the named pairs into real pipelines needs the host device.
+    #[cfg(windows)]
     if !pairs.is_empty() {
         let host = Host::new(false).map_err(anyhow::Error::msg)?;
         let kept = lock(&kept);
@@ -287,6 +325,14 @@ pub fn run(
             };
             println!("pair {v} + {p}: {made}");
         }
+    }
+    #[cfg(not(windows))]
+    if !pairs.is_empty() {
+        println!(
+            "pairs        {} named; building a pipeline for them needs the \
+             Windows host device",
+            pairs.len()
+        );
     }
     let mut lines = t.lines;
     lines.sort();
@@ -433,6 +479,7 @@ fn check(
             &shader.dxil,
         );
     }
+    #[cfg(windows)]
     if let Some((h, stub_ps)) = &checks.host {
         let made = match shader.stage {
             HwStage::Vs => h.pipeline(&shader, stub_ps).map(drop),
@@ -450,9 +497,15 @@ fn check(
             Err(e) => t.fail(format!("pipeline: {e}"), &label),
         }
     }
+    // Off Windows there is no validator to ask, and saying so once at the
+    // start of the run covers every shader: the counts below stay at zero.
+    #[cfg(not(windows))]
+    let _ = &shader;
+    #[cfg(windows)]
     let Some(v) = checks.validator.as_mut() else {
         return;
     };
+    #[cfg(windows)]
     match v.validate(&mut shader.dxil) {
         Ok(()) => {
             *counter(t, shader.stage, 2) += 1;
