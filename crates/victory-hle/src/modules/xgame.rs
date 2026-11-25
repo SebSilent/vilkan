@@ -81,13 +81,22 @@ extern "system" fn launch_new_game(
         .unwrap_or_default();
     let ours: Vec<_> = std::env::args_os().skip(1).collect();
     let command = relaunch_args(ours, current.as_os_str(), &exe, &args);
-    super::lifecycle::end_title(
-        "XLaunchNewGame",
-        Box::new(move || super::lifecycle::relaunch(command)),
-    );
-    loop {
-        std::thread::park();
+    // Ending the title and starting the new process is the loader's job, and
+    // the loader is Windows-only. Off it there is no title to end: report the
+    // relaunch that would have happened and return, rather than park forever
+    // on a start that cannot come.
+    #[cfg(windows)]
+    {
+        super::lifecycle::end_title(
+            "XLaunchNewGame",
+            Box::new(move || super::lifecycle::relaunch(command)),
+        );
+        loop {
+            std::thread::park();
+        }
     }
+    #[cfg(not(windows))]
+    tracing::warn!(?command, "XLaunchNewGame: relaunching needs the Windows loader");
 }
 
 /// Our own arguments for the relaunch: the title's executable replaced by
