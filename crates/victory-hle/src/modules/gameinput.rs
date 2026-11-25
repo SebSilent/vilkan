@@ -637,7 +637,7 @@ fn relative(
     // SAFETY: a reading we handed out and the title still holds.
     let reference = unsafe { &*reference };
     // shortcut: with no device given only the reference's device is walked,
-    // not every device's readings in time order; the title walks
+    // not every device's readings in time order; Chores Simulator Miami walks
     // only keyboard readings (one device) and the current pad's previous one.
     let Some(index) = hub.index(reference.device) else {
         return fail(out, E_INVALIDARG);
@@ -712,7 +712,7 @@ fn token(out: *mut u64) -> HRESULT {
     S_OK
 }
 
-// shortcut: reading callbacks never run; the title registers none
+// shortcut: reading callbacks never run; Chores Simulator Miami registers none
 // (it polls).
 extern "system" fn register_reading(
     _: This,
@@ -911,7 +911,7 @@ extern "system" fn device_status(this: *const Device) -> u32 {
 // shortcut: trigger motors are dropped (XInput has none). The host API that
 // drives them without a redistributable is Windows.Gaming.Input (WinRT
 // `Gamepad.Vibration`), which needs WinRT bindings this crate lacks outside
-// diagnostics builds; the title sends trigger levels in slot 0x50.
+// diagnostics builds; Chores Simulator Miami sends trigger levels in slot 0x50.
 extern "system" fn set_rumble(this: *const Device, params: *const [f32; 4]) {
     // SAFETY: one of our devices.
     let device = unsafe { &*this };
@@ -1144,21 +1144,7 @@ mod host {
                 return None;
             }
             self.empty_until[slot] = None;
-            #[allow(unused_mut)]
-            let mut pad = convert(&state.Gamepad);
-            // The scripted keys (`VICTORY_KEYS`) also press the first
-            // pad's buttons, by the stand-in pad's table: with a real pad
-            // connected the stand-in is not there, and a title that listens
-            // to the pad (the title's start screen) saw nothing.
-            #[cfg(feature = "diagnostics")]
-            if slot == 0 {
-                for vk in scripted() {
-                    if let Some(&(_, button)) = super::FALLBACK_BUTTONS.iter().find(|(key, _)| *key == vk) {
-                        pad.buttons |= button;
-                    }
-                }
-            }
-            Some(pad)
+            Some(convert(&state.Gamepad))
         }
 
         fn keys(&mut self) -> Vec<KeyState> {
@@ -1181,8 +1167,7 @@ mod host {
                     // SAFETY: plain query.
                     scan_code: unsafe { MapVirtualKeyW(u32::from(vk), MAPVK_VK_TO_VSC_EX) },
                     virtual_key: vk,
-                    // shortcut: no characters (code point 0);
-                    // the title reads scan codes and virtual keys only.
+                    // shortcut: no characters (code point 0); Chores Simulator Miami reads scan codes and virtual keys only.
                     ..Default::default()
                 })
                 .collect()
@@ -1198,16 +1183,31 @@ mod host {
         }
     }
 
-    /// Debugging aid: `VICTORY_KEYS=<seconds>:<key>,...` holds each key for
-    /// 0.2 s that long after input starts, with or without focus. A key is a
-    /// letter, a digit, or `Enter`, `Esc`, `Tab`, `Back`, `Up`, `Down`,
-    /// `Left`, `Right` (the stand-in pad's table maps them to buttons).
+    /// Debugging aid: `VICTORY_KEYS=<seconds>:<key>[:<hold>],...` holds each
+    /// key for <hold> seconds (default 0.2) that long after input starts,
+    /// with or without focus. A key is a letter, a digit, or `Enter`, `Esc`,
+    /// `Tab`, `Back`, `Up`, `Down`, `Left`, `Right` (the stand-in pad's table
+    /// maps them to buttons; W/A/S/D drive the left stick). A long hold
+    /// sustains a direction for character movement.
     #[cfg(feature = "diagnostics")]
     fn scripted() -> Vec<u8> {
-        static SCRIPT: LazyLock<(Instant, Vec<(Duration, u8)>)> = LazyLock::new(|| {
+        // A script entry fires at an absolute time from input start, or
+        // event-relative: `mesh+<offset>` fires <offset> seconds after the
+        // first mesh bind (world entry), whose frame varies run to run.
+        enum At { Abs(Duration), MeshAfter(Duration) }
+        static SCRIPT: LazyLock<(Instant, Vec<(At, u8, Duration)>)> = LazyLock::new(|| {
             let list = std::env::var("VICTORY_KEYS").unwrap_or_default();
             let keys = list.split(',').filter_map(|entry| {
-                let (at, key) = entry.split_once(':')?;
+                // <at>:<key>[:<hold_seconds>]; <at> = seconds | mesh+seconds.
+                let mut parts = entry.split(':');
+                let at = parts.next()?.trim();
+                let key = parts.next()?;
+                let hold = parts.next().unwrap_or("0.2");
+                let spec = if let Some(off) = at.strip_prefix("mesh+") {
+                    At::MeshAfter(Duration::try_from_secs_f64(off.trim().parse().ok()?).ok()?)
+                } else {
+                    At::Abs(Duration::try_from_secs_f64(at.parse().ok()?).ok()?)
+                };
                 let vk = match key.trim() {
                     "Enter" => 0x0D,
                     "Esc" => 0x1B,
@@ -1222,18 +1222,32 @@ mod host {
                     }
                     _ => return None,
                 };
-                Some((
-                    Duration::try_from_secs_f64(at.trim().parse().ok()?).ok()?,
-                    vk,
-                ))
+                Some((spec, vk, Duration::try_from_secs_f64(hold.trim().parse().ok()?).ok()?))
             });
             (Instant::now(), keys.collect())
         });
         let (start, keys) = &*SCRIPT;
         let now = start.elapsed();
+        let mesh = victory_gpu::pipeline::mesh_start().map(|m| m.saturating_duration_since(*start));
         keys.iter()
-            .filter(|&&(at, _)| (at..at + Duration::from_millis(200)).contains(&now))
-            .map(|&(_, vk)| vk)
+            .filter(|(at, _, hold)| {
+                let fire = match at {
+                    At::Abs(d) => *d,
+                    At::MeshAfter(off) => match mesh {
+                        Some(m) => m + *off,
+                        None => return false,
+                    },
+                };
+                let active = (fire..fire + *hold).contains(&now);
+                if active && matches!(at, At::MeshAfter(_)) {
+                    static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                    if !LOGGED.swap(true, Ordering::Relaxed) {
+                        tracing::info!(key_hold = ?hold, since_mesh = ?now.checked_sub(fire), "event-relative input hold fired (after first mesh bind)");
+                    }
+                }
+                active
+            })
+            .map(|(_, vk, _)| *vk)
             .collect()
     }
 

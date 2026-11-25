@@ -9,9 +9,11 @@ publish.workspace = true
 
 [dependencies]
 blake3.workspace = true
-zlib-rs.workspace = true
+miniz_oxide.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 victory-formats.workspace = true
 victory-pipeline.workspace = true
 victory-shader.workspace = true

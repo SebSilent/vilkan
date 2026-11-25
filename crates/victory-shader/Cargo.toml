@@ -9,7 +9,8 @@ publish.workspace = true
 
 [dependencies]
 thiserror.workspace = true
-zlib-rs.workspace = true
+miniz_oxide.workspace = true
+tracing.workspace = true
 
 [features]
 # Host D3D12 pipeline checks (`emit::host`).

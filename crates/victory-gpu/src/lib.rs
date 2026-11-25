@@ -24,15 +24,15 @@ pub mod descriptor;
 pub mod device;
 #[cfg(windows)]
 mod draw;
+pub mod drawcap;
 pub mod dxgi;
 pub mod fence;
 pub mod frame;
 #[cfg(windows)]
 mod host;
+mod hostpool;
 #[cfg(windows)]
 mod indirect;
-#[cfg(windows)]
-mod inplace;
 pub mod list;
 pub mod mitigations;
 pub mod object;
@@ -48,8 +48,6 @@ mod sampler;
 #[cfg(windows)]
 pub mod shader_cache;
 #[cfg(windows)]
-mod memory;
-#[cfg(windows)]
 mod shadow;
 pub mod signature;
 #[cfg(windows)]
@@ -60,8 +58,12 @@ mod watch;
 #[cfg(windows)]
 pub use host::on_failure;
 #[cfg(windows)]
-pub use inplace::{title_memory_freeing, title_memory_section, title_memory_view};
-#[cfg(windows)]
-pub use watch::{
-    title_memory_reading, title_memory_remapped, title_memory_remapping, writing as kernel_will_write,
-};
+pub use watch::{title_memory_remapped, writing as kernel_will_write};
+
+/// Drain the background pipeline-compilation pool on shutdown: every queued
+/// job runs (setting its slot, releasing any waiter) before the workers
+/// exit. No-op on non-Windows.
+pub fn shutdown_pool() {
+    #[cfg(windows)]
+    hostpool::shutdown();
+}

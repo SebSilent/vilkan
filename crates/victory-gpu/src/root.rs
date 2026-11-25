@@ -147,7 +147,7 @@ type Deserialize =
 /// `d3d12_xs!D3D12CreateRootSignatureDeserializer`: our blobs are the
 /// host's serialization, so the host's deserializer reads them, and its
 /// object (IUnknown, then the description getter) is laid out as the
-/// console's. The title's upscaler asks with the PC interface id.
+/// console's. Chores Simulator Miami's upscaler asks with the PC interface id.
 pub extern "system" fn create_deserializer(
     blob: *const u8,
     size: usize,
@@ -221,20 +221,20 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn host_serialized_blobs_create_root_signatures() {
-        use windows::Win32::Graphics::Direct3D12::{
-            D3D12_ROOT_CONSTANTS, D3D12_ROOT_PARAMETER, D3D12_ROOT_PARAMETER_0,
-            D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS, D3D12_SHADER_VISIBILITY_ALL,
-        };
-        let parameter = D3D12_ROOT_PARAMETER {
-            ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
-            Anonymous: D3D12_ROOT_PARAMETER_0 {
-                Constants: D3D12_ROOT_CONSTANTS {
-                    ShaderRegister: 0,
-                    RegisterSpace: 0,
-                    Num32BitValues: 1,
-                },
-            },
-            ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+        #[repr(C)]
+        struct Constants {
+            kind: u32,
+            register: u32,
+            space: u32,
+            count: u32,
+            visibility: u32,
+        }
+        let parameter = Constants {
+            kind: 1,
+            register: 0,
+            space: 0,
+            count: 1,
+            visibility: 0,
         };
         let desc = Desc {
             parameter_count: 1,

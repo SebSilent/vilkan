@@ -285,6 +285,107 @@ pub extern "system" fn TerminateProcess(process: *mut c_void, code: u32) -> i32 
     host::terminate_process(process, code)
 }
 
+/// The Win32 process exit (`kernel32!ExitProcess`): logged like [`exit`],
+/// then forwarded. Without this the guest's clean quit is invisible (the
+/// CRT exit and a direct ExitProcess both reach the host unlogged).
+pub extern "system" fn ExitProcess(code: u32) -> ! {
+    tracing::warn!(code, from = %host::callers(), "title ExitProcess");
+    host::exit_process(code)
+}
+
+/// The title's memory wait (`WaitOnAddress`): blocks until the value at
+/// `address` differs from `compare`, or `ms` elapses. Logged when it blocks
+/// over a second or times out — a wait nothing ever meets stalls the loading
+/// thread until the game's hang watchdog fires (the 1a crash). Forwards to
+/// the host unchanged; this only names the blocking call.
+pub extern "system" fn WaitOnAddress(
+    address: *const c_void,
+    compare: *const c_void,
+    size: usize,
+    ms: u32,
+) -> i32 {
+    let started = std::time::Instant::now();
+    let r = host::wait_on_address(address, compare, size, ms);
+    let waited = started.elapsed();
+    if waited > std::time::Duration::from_millis(1000) || r == 0 {
+        tracing::warn!(
+            addr = format_args!("{address:p}"),
+            timeout_ms = ms,
+            waited_ms = waited.as_millis(),
+            ok = r,
+            from = %host::callers(),
+            "WaitOnAddress blocked"
+        );
+    }
+    r
+}
+
+/// The title's event wait (`WaitForSingleObject`): logged when it blocks
+/// over a second or times out, to name the stall the fps breakdown leaves
+/// unaccounted (a 13.7 s frame measured only ~5 ms of GPU/preparing work).
+/// Forwards unchanged.
+pub extern "system" fn WaitForSingleObject(handle: *mut c_void, ms: u32) -> u32 {
+    let started = std::time::Instant::now();
+    let r = host::wait_for_single_object(handle, ms);
+    let waited = started.elapsed();
+    if waited > std::time::Duration::from_millis(1000) || r == 0x102 {
+        tracing::warn!(
+            handle = format_args!("{handle:p}"),
+            timeout_ms = ms,
+            waited_ms = waited.as_millis(),
+            result = r,
+            from = %host::callers(),
+            "WaitForSingleObject blocked"
+        );
+    }
+    r
+}
+
+/// The title's multi-object wait (`WaitForMultipleObjects`): logged like
+/// [`WaitForSingleObject`]. Forwards unchanged.
+pub extern "system" fn WaitForMultipleObjects(
+    count: u32,
+    handles: *const *mut c_void,
+    wait_all: i32,
+    ms: u32,
+) -> u32 {
+    let started = std::time::Instant::now();
+    let r = host::wait_for_multiple_objects(count, handles, wait_all, ms);
+    let waited = started.elapsed();
+    if waited > std::time::Duration::from_millis(1000) || r == 0x102 {
+        tracing::warn!(
+            count,
+            timeout_ms = ms,
+            waited_ms = waited.as_millis(),
+            result = r,
+            from = %host::callers(),
+            "WaitForMultipleObjects blocked"
+        );
+    }
+    r
+}
+
+/// `ntdll!RtlExitUserProcess` — the path a clean guest quit takes that
+/// kernel32!ExitProcess interception misses. Log the code and the guest
+/// callers (the last guest calls before the quit).
+pub extern "system" fn RtlExitUserProcess(status: i32) -> ! {
+    tracing::warn!(code = status, from = %host::callers(), "title RtlExitUserProcess");
+    host::rtl_exit_user_process(status)
+}
+
+/// `ntdll!NtTerminateProcess`: logged like [`TerminateProcess`].
+pub extern "system" fn NtTerminateProcess(process: *mut c_void, status: i32) -> i32 {
+    tracing::warn!(code = status, from = %host::callers(), "title NtTerminateProcess");
+    host::nt_terminate_process(process, status)
+}
+
+/// `kernel32!ExitThread`: a thread ends (debug level — threads come and go);
+/// the main thread's exit is what ends the process.
+pub extern "system" fn ExitThread(code: u32) -> ! {
+    tracing::debug!(code, from = %host::callers(), "title ExitThread");
+    host::exit_thread(code)
+}
+
 /// The pseudo handle of one of our modules: its address, never a real image.
 fn handle(m: &HleModule) -> *mut c_void {
     m as *const HleModule as *mut c_void
@@ -356,6 +457,8 @@ pub(crate) fn module() -> HleModule {
         dlls: &[
             "kernel32.dll",
             "kernelbase.dll",
+            "ntdll.dll",
+            "api-ms-win-core-synch-*",
             "api-ms-win-core-libraryloader-*",
             "api-ms-win-core-processthreads-*",
             "api-ms-win-core-debug-*",
@@ -381,6 +484,13 @@ pub(crate) fn module() -> HleModule {
             hle_export!(terminate),
             hle_export!(_invalid_parameter_noinfo_noreturn),
             hle_export!(TerminateProcess),
+            hle_export!(ExitProcess),
+            hle_export!(WaitOnAddress),
+            hle_export!(WaitForSingleObject),
+            hle_export!(WaitForMultipleObjects),
+            hle_export!(RtlExitUserProcess),
+            hle_export!(NtTerminateProcess),
+            hle_export!(ExitThread),
             hle_export!(SetUnhandledExceptionFilter),
         ],
     }
@@ -402,7 +512,16 @@ mod host {
         DisableThreadLibraryCalls, GetModuleFileNameA, GetModuleFileNameW, GetModuleHandleA,
         GetModuleHandleW, GetProcAddress, LoadLibraryExA, LoadLibraryExW,
     };
-    use windows_sys::Win32::System::Threading::TerminateProcess;
+    use windows_sys::Win32::System::Threading::{
+        ExitProcess, ExitThread, TerminateProcess, WaitForMultipleObjects, WaitForSingleObject,
+        WaitOnAddress,
+    };
+
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        fn RtlExitUserProcess(status: i32) -> !;
+        fn NtTerminateProcess(process: *mut c_void, status: i32) -> i32;
+    }
 
     unsafe extern "C" {
         #[link_name = "exit"]
@@ -484,6 +603,51 @@ mod host {
     pub(super) fn terminate_process(process: *mut c_void, code: u32) -> i32 {
         // SAFETY: see above.
         unsafe { TerminateProcess(process, code) }
+    }
+
+    pub(super) fn exit_process(code: u32) -> ! {
+        // SAFETY: see above.
+        unsafe { ExitProcess(code) }
+    }
+
+    pub(super) fn rtl_exit_user_process(status: i32) -> ! {
+        // SAFETY: forwarding the title's own argument to the host API.
+        unsafe { RtlExitUserProcess(status) }
+    }
+
+    pub(super) fn nt_terminate_process(process: *mut c_void, status: i32) -> i32 {
+        // SAFETY: see above.
+        unsafe { NtTerminateProcess(process, status) }
+    }
+
+    pub(super) fn exit_thread(code: u32) -> ! {
+        // SAFETY: see above.
+        unsafe { ExitThread(code) }
+    }
+
+    pub(super) fn wait_on_address(
+        address: *const c_void,
+        compare: *const c_void,
+        size: usize,
+        ms: u32,
+    ) -> i32 {
+        // SAFETY: the title's own arguments, forwarded to the host API.
+        unsafe { WaitOnAddress(address, compare, size, ms) }
+    }
+
+    pub(super) fn wait_for_single_object(handle: *mut c_void, ms: u32) -> u32 {
+        // SAFETY: the title's own arguments, forwarded to the host API.
+        unsafe { WaitForSingleObject(handle, ms) }
+    }
+
+    pub(super) fn wait_for_multiple_objects(
+        count: u32,
+        handles: *const *mut c_void,
+        wait_all: i32,
+        ms: u32,
+    ) -> u32 {
+        // SAFETY: the title's own arguments, forwarded to the host API.
+        unsafe { WaitForMultipleObjects(count, handles, wait_all, ms) }
     }
 
     pub(super) fn set_unhandled_exception_filter(filter: extern "system" fn(*const c_void) -> i32) {
@@ -579,6 +743,44 @@ mod host {
 
     pub(super) fn terminate_process(_: *mut c_void, code: u32) -> i32 {
         std::process::exit(code as i32)
+    }
+
+    pub(super) fn exit_process(code: u32) -> ! {
+        std::process::exit(code as i32)
+    }
+
+    pub(super) fn rtl_exit_user_process(status: i32) -> ! {
+        std::process::exit(status)
+    }
+
+    pub(super) fn nt_terminate_process(_: *mut c_void, status: i32) -> i32 {
+        std::process::exit(status)
+    }
+
+    pub(super) fn exit_thread(code: u32) -> ! {
+        std::process::exit(code as i32)
+    }
+
+    pub(super) fn wait_on_address(
+        _address: *const c_void,
+        _compare: *const c_void,
+        _size: usize,
+        _ms: u32,
+    ) -> i32 {
+        1
+    }
+
+    pub(super) fn wait_for_single_object(_handle: *mut c_void, _ms: u32) -> u32 {
+        0
+    }
+
+    pub(super) fn wait_for_multiple_objects(
+        _count: u32,
+        _handles: *const *mut c_void,
+        _wait_all: i32,
+        _ms: u32,
+    ) -> u32 {
+        0
     }
 
     pub(super) fn set_unhandled_exception_filter(_: extern "system" fn(*const c_void) -> i32) {}
